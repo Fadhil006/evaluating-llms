@@ -1,5 +1,103 @@
 # Build Plan
 
+## Active Scope: Credible Demo in Seven Days
+
+This section supersedes the longer release schedule below. The remaining sections
+are a future roadmap, not requirements for the one-week demo.
+
+**Deliverable:** a local dashboard comparing two named text/instruction models on
+numerical reasoning and objectively checkable instruction following, including
+paraphrase robustness, saved raw answers, scoring explanations, and JSONL/CSV
+exports. No training or fine-tuning is needed.
+
+### Experiment size and credibility
+
+- Prepare 10 separate development examples and 30 evaluated base questions
+  (15 per category), each with one reviewed paraphrase: 60 evaluated prompts.
+- Two models and one repetition require 120 evaluated requests, excluding
+  development, smoke tests, and retries. This is a small exploratory evaluation,
+  not a statistically strong general ranking.
+- Freeze evaluation questions and scoring rules before inspecting their model
+  outputs. Keep development examples separate. Log changes as new versions.
+- Verify reference answers and pair meaning manually. Have a second person check
+  them if available; accurately report who reviewed them.
+- Numeric answers use declared normalization and tolerances. Instruction checks
+  cover explicit rules such as required JSON fields or forbidden terms; do not
+  equate format compliance with general intelligence or factual correctness.
+- Report category scores, paired original-minus-paraphrase accuracy in percentage
+  points, complete-pair counts, request failures, and end-to-end latency separately.
+- Save prompts, raw answers, errors, dataset hash, model identifiers, routing,
+  settings, timestamps, scorer version, and code commit. Explain that one run does
+  not measure output variability and temperature zero is not determinism.
+- Manually inspect all 120 evaluated outputs. Keep original automatic scores and
+  record review notes separately; do not silently repair scores after seeing results.
+- Demonstrate 2–4 live requests plus the full saved real run. Label saved results
+  and offline mock data clearly; never present mock responses as measured evidence.
+
+### Provider decision
+
+**Recommended:** two fixed, inexpensive instruction/chat models through OpenRouter,
+ideally from different model families. Select exact available IDs and endpoints on
+day 1, after checking prices and output quality on development items. Do not use
+an automatic model selector for comparison runs. Set one provider per model,
+disable fallback, require supported parameters, and record actual routing where
+available. A model alias is not a guarantee of immutable hosted weights.
+
+Strictly free alternative: two explicitly named OpenRouter `:free` models, with
+availability checked first and a multi-day request schedule. Official limits at
+planning time are 20 requests/minute and 50 free requests/day for accounts with
+less than $10 purchased credits, or 1,000/day after at least $10 purchased credits.
+The 120-request evaluation alone needs at least three daily quotas on the lower
+tier; development and retries need additional capacity. Recheck account limits.
+
+OpenCode is the development assistant, not the evaluation runner. OpenCode Zen
+also exposes model APIs and could be integrated directly, but a coding-agent run
+adds system prompts, tools, and context that change what is being evaluated. Do
+not assume access in the editor implies a reusable API entitlement or stable free
+capacity. A Zen integration is not needed for this deadline.
+
+Local inference through Ollama is an alternative if suitable hardware and models
+are already available. Otherwise downloads, memory limits, and inference speed
+add deadline risk. Select local model sizes only after checking RAM/VRAM; record
+model digest, quantization, runtime, and hardware. Do not present local-versus-cloud
+latency as a pure model-speed comparison.
+
+Use a user-approved spend cap for hosted requests; estimate it from measured pilot
+tokens and current prices before the full run. No exact model price or dollar
+budget is assumed. Zero-budget access is a constraint, not evidence of poorer
+scientific validity: fixed inputs, traceable outputs, and honest claims matter.
+
+### Seven-day execution plan
+
+| Day | Build | Done when |
+|---|---|---|
+| 1 | Confirm provider/budget; write protocol, minimal Python setup, ignore rules, dataset schema, development examples | Offline validation works; two model IDs selected; small live access check succeeds |
+| 2 | Author and verify 30 base items plus paraphrases; implement numeric and rule scorers | All references and pairs reviewed; known correct/wrong/malformed outputs tested; evaluation data frozen |
+| 3 | Implement sequential runner, bounded retry, per-response persistence, resume, and offline provider stub | Interrupted run resumes without duplicating completed records; errors and truncations remain visible |
+| 4 | Add paired analysis and run real evaluation | Summary matches hand-calculated examples; real responses saved; free-tier runs begin earlier if required by quotas |
+| 5 | Build a small Streamlit dashboard: overview, model comparison, answer inspection, export | Dashboard reproduces saved summaries without calling a model on refresh |
+| 6 | Inspect outputs, record scoring disagreements, finish evaluation and documentation | Every output reviewed; limitations documented; clean setup and offline checks pass |
+| 7 | Freeze demo version, rehearse live smoke run, prepare report and saved-result fallback | Another person can inspect or reproduce the workflow; real saved results remain usable without network |
+
+**Demo architecture:** Python runner + JSONL run artifacts + a Streamlit viewer.
+Use one run directory with immutable configuration, append-only response records,
+and generated summary/export files. No SQLite, hosted deployment, accounts,
+background service, model training, LLM judge, or UI-launched jobs in this week.
+Keep manual review notes in CSV. Knowledge and evidence-based answering move to
+the later release; the runnable two-category experiment is the week-one goal.
+
+**Immediate decisions:** zero budget or a small paid allowance; hosted or already
+working local inference; availability of a second reviewer. If undecided, proceed
+with offline runner development and OpenRouter as the proposed live integration.
+
+Provider references (limits and availability must be rechecked before execution):
+- https://openrouter.ai/docs/api/reference/limits
+- https://openrouter.ai/docs/guides/routing/provider-selection
+- https://opencode.ai/docs/zen/
+- https://docs.ollama.com/api/introduction
+
+## Longer-Term Roadmap
+
 This is an implementation proposal, not a report of completed work. The
 repository currently has documentation only; no commands below are runnable
 until the corresponding files and dependencies are created. Files under
