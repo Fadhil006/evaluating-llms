@@ -15,6 +15,7 @@ This project has no custom instructions.
 
 - `project_overview.md` summarizes the LLM-evaluation survey, its themes, and possible project outputs.
 - `implementation_plan.md` proposes a future LLM-evaluation platform and experiment; its architecture, tools, and milestones are plans, not an existing implementation.
+- `BUILD_PLAN.md` defines the phased execution roadmap, acceptance checks, and first-release scope. Its commands and file layout are proposals until implemented and verified.
 - `sources/ai_project.md` is the synced text of the 2024 survey *A Survey on Evaluation of Large Language Models*; `sources/figure-1.png` through `figure-3.png` are reference figures.
 - There is currently no application source code, dataset, test suite, dependency manifest, or runnable build in this directory.
 

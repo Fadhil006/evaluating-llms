@@ -7,7 +7,8 @@ until the corresponding files and dependencies are created. Files under
 
 ## Goal
 
-Build the smallest reproducible experiment for the question:
+Build the evaluation application described in `implementation_plan.md`, beginning
+with the smallest reproducible experiment for the question:
 
 > Does paraphrasing change an LLM's answer accuracy?
 
@@ -16,6 +17,31 @@ questions paired with meaning-preserving variants. Report item-level results,
 accuracy on each form, paired accuracy change, request failures, and the exact
 conditions used. Treat the result as a small pilot, not evidence of general
 model superiority.
+
+The target first release compares **two models across knowledge, reasoning,
+instruction following, and evidence-based answering**, with paraphrase robustness,
+a results dashboard, and human review. The ten-pair pilot is the first milestone,
+not the final deliverable. `implementation_plan.md` provides the broader research
+rationale; this document sets the implementation order.
+
+## Working Assumptions and Architecture
+
+- Start as a single-user local Python application; no accounts, hosted service,
+  task queue, or separate web backend is needed for the first release.
+- Run experiments through a command-line entry point independent of the UI.
+  Initially the dashboard reads saved runs; refreshing it cannot trigger model calls.
+- Use JSONL for datasets and initial run records. Introduce SQLite when building
+  persistent answer review and experiment browsing, with JSONL export retained.
+- Use the proposed Streamlit dashboard after the runner is verified. Validate
+  current framework/provider documentation when implementing those integrations.
+- Keep credentials in environment variables, never datasets, saved configurations,
+  logs, or Git. Add ignore rules before any real provider run.
+- Use standard-library validation, persistence, and tests where sufficient. Add
+  a provider SDK only after choosing the first provider.
+- A mock response path allows offline development; it never counts as model evidence.
+
+Data flow: **dataset → validated run configuration → provider → saved response →
+task scorer → paired analysis → dashboard/review → report**.
 
 ## Sequential Phases
 
@@ -38,7 +64,8 @@ variant policy, exclusions, and limits on claims.
   license/provenance, and dataset version in JSONL.
 - Verify every answer independently, remove duplicates, and review that each
   variant preserves meaning and difficulty as far as practical.
-- Freeze the test set before evaluating models.
+- Version the pilot dataset before each run. Reserve a separate final test set;
+  pilot examples used for debugging must not become final held-out evidence.
 
 Acceptance: every item validates against the protocol, every pair is reviewed,
 and development examples are separate from reported test items.
@@ -51,7 +78,8 @@ and development examples are separate from reported test items.
 - Add only the task-specific scorer required by the pilot.
 - Keep results in simple JSONL; do not introduce a database yet.
 
-Acceptance: a clean checkout can run ten questions end-to-end, preserve raw
+Acceptance: a clean checkout can run ten originals plus ten paraphrases (20
+requests per model per repetition) end-to-end, preserve raw
 responses and failures, and avoid silently overwriting prior results.
 
 ### 4. Validate scoring and robustness analysis
@@ -60,16 +88,22 @@ responses and failures, and avoid silently overwriting prior results.
 - Calculate original accuracy, variant accuracy, paired accuracy change in
   percentage points, completion rate, and request-failure rate.
 - Inspect every pilot response and correct dataset or scorer defects before
-  freezing the protocol.
+  freezing the final protocol and held-out dataset. Retain earlier pilot versions
+  rather than silently modifying the inputs behind saved results.
 
 Acceptance: aggregate totals match item-level records; failures are not treated
 as ordinary wrong answers; the report distinguishes scoring defects from model
 errors.
 
-### 5. Add comparison only if justified
+### 5. Add the second model and remaining task categories
 
-- Add a second model/provider only after the first slice is reproducible and
+- Add a second model after the first slice is reproducible and
   budget/access are confirmed.
+- Prefer a second model from the same provider initially if it meets the research
+  objective. Add a separate provider integration only when needed.
+- Implement multiple-choice and numeric scoring, explicit instruction checks,
+  and passage-answer scoring with abstention checks. Route uncertain passage
+  assessments to human review rather than claiming exact match establishes truth.
 - Run the same frozen items and common instructions, recording provider
   differences and model identifiers.
 - Use paired comparisons and state when differences are inconclusive.
@@ -77,12 +111,36 @@ errors.
 Acceptance: each result is traceable to dataset version, model, settings, date,
 and scorer version; no ranking claim exceeds the pilot evidence.
 
-### 6. Document and expand deliberately
+### 6. Build the dashboard and human review workflow
+
+- Add dataset preview, saved experiment browsing, results, and answer review views.
+- Show category accuracy, paired robustness changes, completion rate, latency,
+  cost when known, and links to raw answers. Always show model and dataset versions.
+- Store reviewer IDs, rubric version, and independent ratings. Hide model identity
+  during review; retain original ratings when disagreements are resolved.
+- Use SQLite for experiments, responses, and reviews once this workflow is added.
+  Persist each response transactionally and export records without credentials.
+- Keep execution in the CLI for the first UI release; display its saved progress.
+  Add UI launch/cancellation only with explicit duplicate-run protection.
+
+Acceptance: dashboard totals match exported records, reviews survive a restart,
+and page refreshes do not send requests or overwrite another reviewer's ratings.
+
+### 7. Run the controlled experiment and produce the report
 
 - Add reproducibility instructions, dataset provenance, failure analysis, and
   a report separating survey findings, proposed methods, and measured results.
-- Expand task categories, repetitions, human review, or visualization only
-  after the pilot exposes a concrete need and the budget supports it.
+- Freeze the protocol, scorer version, held-out dataset, and model settings after
+  pilot corrections. Record any subsequent changes as a new experiment version.
+- Use the detailed proposal's 160 base questions plus 120 variants as a target,
+  subject to answer verification and budget. Keep the 40 development questions
+  outside the final results. Start with one repetition, then assess repeat costs.
+- For two models, 280 prompts and three repetitions mean 1,680 generation
+  requests before retries; approve the budget after measuring the pilot.
+- Review a stratified sample of roughly 60 responses with two independent
+  reviewers if available. Report agreement and automatic-scoring disagreements.
+- Compute uncertainty using base-question groups: originals, variants, and
+  repetitions belong together, not as independent samples.
 
 Acceptance: another person can reproduce the documented run, and limitations
 cover sample size, contamination, variant validity, scorer reliability, and
@@ -94,6 +152,51 @@ The first implementation commit should support one command-line run over ten
 paired questions and one model. It must save configuration, raw responses,
 scores, timing, and failures, then produce a small summary of original versus
 variant accuracy. No dashboard is required for this milestone.
+
+## Proposed Files and Commit Sequence
+
+Create files only as their phase starts; this is not an existing directory tree.
+
+| Phase | Files or modules | Suggested commit boundary |
+|---|---|---|
+| 1 | `protocol.md`, `README.md`, `.gitignore`, `pyproject.toml` | Document scope and establish minimal Python setup |
+| 2 | `datasets/pilot.jsonl`, `evaluation/dataset.py` | Add reviewed pairs and input validation |
+| 3 | `evaluation/runner.py`, `evaluation/provider.py`, `evaluation/__main__.py` | Save an offline run, then integrate one provider |
+| 4 | `evaluation/scoring.py`, `evaluation/analysis.py`, `tests/` | Verify scoring, error handling, and paired totals |
+| 5 | Dataset versions and targeted additions to existing modules | Add second model and remaining task scorers |
+| 6 | `app.py`, `evaluation/storage.py` | Add persistent browsing, followed by blinded review |
+| 7 | `reports/`, reproduction instructions | Record frozen experiment and measured findings |
+
+Run outputs belong under `runs/` and should be ignored by default. Publish only
+explicitly selected, sanitized experiment artifacts. Do not create a provider
+class hierarchy or split modules further until actual complexity requires it.
+
+## Verification Gates
+
+- **Dataset:** reject missing IDs, duplicate IDs, invalid pair references, missing
+  answers, invalid categories, and original/variant leakage between splits.
+- **Runner:** use offline responses to exercise success, timeout, rate limiting,
+  bounded retries, interrupted writes, and restart without duplicate completed
+  records. Keep unique run/item/model/repetition keys.
+- **Scoring:** check correct, wrong, malformed, ambiguous, and valid alternative
+  answers; independently calculate a small reference summary.
+- **Analysis:** report denominators explicitly. Compute paired changes on pairs
+  with both responses available, and separately disclose incomplete pairs and
+  request failures. Never compare different response subsets silently.
+- **Reproducibility:** record dataset hash, code commit, scorer version, prompt,
+  generation settings, requested/returned model identifiers, timestamps, and errors.
+- **Live integration:** after offline checks, run a small paid smoke test only once
+  provider access and spend limits are known; save observed usage and failure rates.
+- **Release:** reproduce one saved report from raw records without another model
+  call, check UI/export agreement, and document the commands actually verified.
+
+## Approximate Schedule
+
+Use the original 6–8 week estimate as a planning assumption, not a commitment:
+week 1 protocol and data; week 2 first runner; week 3 scoring and second model;
+week 4 dashboard and review; weeks 5–6 pilot corrections and final experiments;
+weeks 7–8 report, reproduction checks, and contingency. Each acceptance gate,
+rather than the calendar, determines when to move on.
 
 ## Proposed Verification Commands
 
@@ -119,16 +222,19 @@ and agreement between item-level records and summaries.
   is acceptable.
 - **Deadline:** determines whether the deliverable is only the pilot or also a
   second model, human review, and a report.
-- **Research emphasis:** robustness first, or a broader capability comparison.
-- **Review requirement:** whether human review is required for the submission.
+- **Research emphasis:** use robustness plus four-category comparison as the
+  default; confirm whether submission requirements call for a different scope.
+- **Review availability:** who can independently verify answers and review outputs?
+
+These decisions do not block writing the protocol or building the offline path.
+Provider and budget decisions do block live requests and final model selection.
 
 ## Explicit Deferrals
 
-- Streamlit dashboard: defer until command-line results are reliable and users
-  need interactive inspection.
-- SQLite/results database: defer while JSONL is sufficient for the pilot.
-- Multiple adapters and third models: defer until provider choice and budget
-  are settled.
+- Streamlit dashboard and SQLite: scheduled for phase 6, after the command-line
+  pipeline is reliable; they are part of the intended application release.
+- Additional provider adapters and a third model: defer beyond the two-model
+  release unless required by model access.
 - LLM judging: defer until human or automatic scoring exposes a specific gap;
   never treat an LLM judge as ground truth without validation.
 - Comprehensive safety, multilingual, multimodal, agent, and benchmark-harness
