@@ -58,7 +58,8 @@ def control_panel():
         with st.form("live_run", clear_on_submit=False):
             a, b = st.columns(2)
             dataset = a.selectbox("Dataset", ["dev.jsonl", "benchmark.jsonl"],
-                                  format_func=lambda name: "Development · dev" if name == "dev.jsonl" else "Held-out · test")
+                                  format_func=lambda name: "Development · 4 questions" if name == "dev.jsonl" else "Held-out · 24 questions")
+            a.caption("Start with development; inspect saved answers before trying held-out.")
             if opencode:
                 models = list(OPENCODE_MODELS)
                 b.write("**Models · fixed pair**")
@@ -494,8 +495,13 @@ def main():
         st.write("Coding and summarization are proxy checks requiring human review. "
                  "The results do not establish an overall model ranking.")
 
-    overview, categories, robustness, inspector = st.tabs(
-        ["Overview", "By category", "Paired robustness", "Answer inspector"])
+    if len(models) == 2:
+        overview, compare, categories, robustness, inspector = st.tabs(
+            ["Overview", "Compare answers", "By category", "Paired robustness", "Answer inspector"])
+    else:
+        overview, categories, robustness, inspector = st.tabs(
+            ["Overview", "By category", "Paired robustness", "Answer inspector"])
+        compare = None
     with overview:
         st.header("Model coverage")
         st.caption("Saved results only. A blank score means there are no objectively scored answers; pending and failed requests are not counted as wrong.")
@@ -550,6 +556,40 @@ def main():
             else:
                 st.info("No questions have objective scores for both models yet. Check coverage and saved answers before comparing.")
         st.caption("No cost or token estimates: the saved records do not provide a comparable measure.")
+
+    if compare is not None:
+        with compare:
+            st.header("The same question, two saved records")
+            st.caption("Read answers side by side. Pending, failed and review items are not objective scores or a model ranking.")
+            item = st.selectbox("Question to compare", items, key="compare_item",
+                                format_func=lambda entry: f"{entry['id']} · {entry.get('category', 'Question')}")
+            st.write("Question")
+            st.code(item["prompt"], language="text")
+            st.write("Reference answer")
+            st.code(item.get("reference_answer") or "Not recorded", language="text")
+            selected_rows = {row["model"]: row for row in rows if row["item_id"] == item["id"]}
+            for column, model in zip(st.columns(2, gap="medium"), models):
+                row = selected_rows[model]
+                with column.container(border=True):
+                    st.subheader(MODEL_NAMES.get(model, OPENCODE_MODELS.get(model, model)))
+                    st.caption(model)
+                    status = row["response_status"]
+                    if status == "ok":
+                        st.write("Saved answer")
+                        st.code(row["raw_answer"] if row["raw_answer"] is not None else "No saved answer", language="text")
+                        if row["score_status"] == "scored" and type(row["correct"]) is bool:
+                            st.write("Objective score: " + ("Correct" if row["correct"] else "Incorrect"))
+                        elif row["score_status"] == "review":
+                            st.info("Needs human review · no objective score.")
+                        else:
+                            st.warning("Invalid or unscored · no objective score.")
+                        if row["explanation"]:
+                            st.write("Scoring explanation")
+                            st.code(row["explanation"], language="text")
+                    elif status in ("pending", "rate_limited"):
+                        st.info("Rate limited · no saved answer" if status == "rate_limited" else "Pending · no saved answer")
+                    else:
+                        st.warning("Truncated · no objective score" if status == "truncated" else "Request failed · no saved answer")
 
     with categories:
         st.header("Capability slices")

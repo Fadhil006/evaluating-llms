@@ -407,6 +407,48 @@ class DashboardTests(unittest.TestCase):
                                     for info in page.info))
                 self.assertTrue(any("Source: OpenCode" in caption.value for caption in page.caption))
                 self.assertFalse(any("Shared scored items" in frame.value.columns for frame in page.dataframe))
+                self.assertIn("Compare answers", [tab.label for tab in page.tabs])
+                self.assertEqual(sum("Pending · no saved answer" in info.value for info in page.info), 2)
+                self.assertFalse(any("Objective score:" in text.value for text in page.tabs[1].markdown))
+                access.preflight.assert_not_called()
+                live.assert_not_called()
+
+    def test_question_comparison_keeps_review_failure_and_pending_separate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            shutil.copyfile(ROOT / "app.py", home / "app.py")
+            fixtures = home / "fixtures.json"
+            fixtures.write_text(json.dumps({
+                "first": {"dr1-o": "B", "dr1-p": "not a choice", "dm1-o": "7 units",
+                          "dm1-p": {"status": 500}},
+                "second": {"dr1-o": "A", "dr1-p": {"status": 500}, "dm1-o": "7",
+                           "dm1-p": {"status": 429}},
+            }), encoding="utf-8")
+            run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, home / "runs" / "cases", ["first", "second"])
+            access = types.ModuleType("evaluation.access")
+            access.preflight = Mock()
+            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
+                    "evaluation.runner.run_live_comparison") as live:
+                page = AppTest.from_file(str(home / "app.py")).run()
+                self.assertFalse(page.exception)
+                self.assertIn("Compare answers", [tab.label for tab in page.tabs])
+                self.assertTrue(any("Objective score: Correct" in text.value for text in page.markdown))
+                self.assertTrue(any("Objective score: Incorrect" in text.value for text in page.markdown))
+                question = next(box for box in page.selectbox if box.label == "Question to compare")
+                page = question.set_value(next(option for option in question.options if option.startswith("dr1-p ·"))).run()
+                self.assertFalse(page.exception)
+                self.assertTrue(any("Invalid or unscored" in warning.value for warning in page.warning))
+                self.assertTrue(any("Request failed · no saved answer" in warning.value for warning in page.warning))
+                self.assertFalse(any("Objective score:" in text.value for text in page.tabs[1].markdown))
+                question = next(box for box in page.selectbox if box.label == "Question to compare")
+                page = question.set_value(next(option for option in question.options if option.startswith("dm1-o ·"))).run()
+                self.assertTrue(any("Needs human review · no objective score" in info.value for info in page.info))
+                self.assertTrue(any("Objective score: Correct" in text.value for text in page.markdown))
+                question = next(box for box in page.selectbox if box.label == "Question to compare")
+                page = question.set_value(next(option for option in question.options if option.startswith("dm1-p ·"))).run()
+                self.assertTrue(any("Rate limited · no saved answer" in info.value for info in page.info))
+                self.assertTrue(any("Request failed · no saved answer" in warning.value for warning in page.warning))
+                self.assertFalse(any("Objective score:" in text.value for text in page.tabs[1].markdown))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
 
