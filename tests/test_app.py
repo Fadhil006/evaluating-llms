@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 try:
     from streamlit.testing.v1 import AppTest
-    from app import attention_matches, joined_rows, matched_comparison, run_feedback, safe_run_path, tally
+    from app import attention_matches, joined_rows, matched_comparison, plain_check_summary, plain_rule_summary, run_feedback, safe_run_path, tally
 except ImportError:  # Optional UI dependency is not required for the core CLI.
     AppTest = None
 from evaluation.runner import run
@@ -27,6 +27,23 @@ def submit(page):
 
 @unittest.skipUnless(AppTest is not None, "install .[ui] to test the dashboard")
 class DashboardTests(unittest.TestCase):
+    def test_saved_checks_have_plain_language_explanations(self):
+        self.assertIn("one clear letter", plain_rule_summary({"scorer": "mcq"}))
+        self.assertIn("0.5", plain_rule_summary({"scorer": "numeric", "rules": {"tolerance": 0.5}}))
+        self.assertIn("status=ok", plain_rule_summary({"scorer": "instruction_rules",
+                        "rules": {"required_json_values": {"status": "ok"}}}))
+        choice = plain_check_summary({"scorer": "mcq", "checks": {"choice": "B"},
+                                      "reference_answer": "B", "correct": True})
+        self.assertIn("read the letter B", choice)
+        self.assertIn("They match", choice)
+        number = plain_check_summary({"scorer": "numeric", "checks": {"value": 7.0,
+                                      "tolerance": 0.0001, "within_tolerance": True},
+                                      "reference_answer": "7"})
+        self.assertIn("allowed difference", number)
+        review = plain_check_summary({"scorer": "code_syntax", "checks": {"syntax_valid": True,
+                                      "function_name": True, "signature": False}})
+        self.assertIn("person must judge", review)
+
     def test_run_name_cannot_escape_runs(self):
         for name in ("../outside", "/tmp/outside", "a/b", ".hidden", "a\\b", "a b"):
             with self.subTest(name=name), self.assertRaises(ValueError):
@@ -364,7 +381,7 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(dashboard.exception)
             self.assertTrue(any("SYNTHETIC" in message.value for message in dashboard.warning))
             self.assertEqual([tab.label for tab in dashboard.tabs],
-                             ["Overview", "By category", "Paired robustness", "Answer inspector"])
+                             ["Overview", "Question types", "Reworded questions", "See every check"])
             metrics = {metric.label: metric.value for metric in dashboard.metric}
             self.assertEqual({label: metrics[label] for label in
                               ("Correct / scored", "Answered / total", "For human review", "Pending")},

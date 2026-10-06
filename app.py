@@ -48,9 +48,9 @@ def safe_run_path(name):
 
 def control_panel():
     with st.container(border=True, key="workbench"):
-        st.caption("01  /  RUN WORKBENCH")
+        st.caption("LIVE COMPARISON / SETUP")
         st.header("Compare two models.")
-        st.write("Start with the four-answer offline demo above. For a live run, choose one dataset and two models; nothing is sent until you confirm.")
+        st.write("Each model gets the same questions. We save both answers, check them using rules written in advance, and show you each check. Nothing is sent until you confirm below.")
         backend = st.selectbox("How will you connect?", ["OpenRouter", "OpenCode (free-labeled)"])
         opencode = backend == "OpenCode (free-labeled)"
         choices = OPENCODE_MODELS if opencode else MODEL_PROVIDERS
@@ -60,7 +60,7 @@ def control_panel():
             a, b = st.columns(2)
             dataset = a.selectbox("Dataset", ["dev.jsonl", "benchmark.jsonl"],
                                   format_func=lambda name: "Development · 4 questions" if name == "dev.jsonl" else "Held-out · 24 questions")
-            a.caption("Start with development; inspect saved answers before trying held-out.")
+            a.caption("This means the set of questions. Start with the short 4-question set.")
             if opencode:
                 models = list(OPENCODE_MODELS)
                 b.write("**Models · fixed pair**")
@@ -79,6 +79,7 @@ def control_panel():
                                     help="Reuse a name only to resume the same backend, two models, their order, and dataset; otherwise choose a new name.")
             cap = d.number_input("Total attempt cap for both models", min_value=1, max_value=50, value=8, step=1,
                                  help="One shared cap across both models; earlier attempts and retries count when resuming. Not a per-click allowance.")
+            d.caption("An attempt is one request to one model. Retries use an attempt too.")
             workload = 8 if dataset == "dev.jsonl" else 48
             st.caption(f"{'Development: 4' if dataset == 'dev.jsonl' else 'Held-out: 24'} questions × 2 models = {workload} planned answers. "
                        + (f"Cap {int(cap)} is below {workload}: this comparison will be partial." if cap < workload else
@@ -364,6 +365,85 @@ def attention_matches(row, choice):
     return row["correct"] is True
 
 
+def plain_rule_summary(row):
+    """Describe the declared scoring rule before showing its saved outcome."""
+    kind = row.get("scorer")
+    rules = row.get("rules") if isinstance(row.get("rules"), dict) else {}
+    if kind == "mcq":
+        return "Rule set before the run: accept one clear letter from A to D and compare it with the expected letter."
+    if kind == "numeric":
+        return ("Rule set before the run: accept one final number and allow a difference of up to "
+                f"{rules.get('tolerance', 0.0001)} from the expected number.")
+    if kind == "short_answer":
+        return "Rule set before the run: ignore capital letters and extra spaces, then compare with the saved accepted answers."
+    if kind == "instruction_rules":
+        parts = []
+        if rules.get("required_keys"):
+            parts.append("include fields " + ", ".join(map(str, rules["required_keys"])))
+        if rules.get("required_json_values"):
+            parts.append("use exact values " + ", ".join(
+                f"{key}={value}" for key, value in rules["required_json_values"].items()))
+        if rules.get("forbidden_strings"):
+            parts.append("avoid " + ", ".join(map(str, rules["forbidden_strings"])))
+        if "bullet_count" in rules:
+            parts.append(f"write {rules['bullet_count']} bullet points")
+        return "Rule set before the run: " + ("; ".join(parts) if parts else "follow the saved format requirements") + "."
+    if kind == "summary_constraints":
+        terms = ", ".join(map(str, rules.get("required_terms", []))) or "the required terms"
+        return ("Rule set before the run: keep the summary between "
+                f"{rules.get('min_words', '?')} and {rules.get('max_words', '?')} words and include {terms}. "
+                "These checks cannot prove the summary is faithful.")
+    if kind == "code_syntax":
+        inputs = ", ".join(map(str, rules.get("parameters", []))) or "the requested inputs"
+        return ("Rule set before the run: the Python text must parse and define "
+                f"{rules.get('function_name', 'the required function')} with inputs {inputs}. "
+                "The app does not run the code or prove it works.")
+    return "The saved record does not identify a supported scoring rule for this answer."
+
+
+def plain_check_summary(row):
+    """Explain the saved check in everyday language without recomputing a score."""
+    checks = row.get("checks")
+    if not isinstance(checks, dict) or not checks:
+        return "There is no saved check for this answer yet. The app cannot call it right or wrong."
+    kind = row.get("scorer")
+    reference = row.get("reference_answer")
+    if kind == "mcq" and isinstance(checks.get("choice"), str):
+        choice = checks["choice"]
+        return (f"The checker read the letter {choice} from the model's answer. "
+                f"The saved expected letter is {reference}. "
+                + ("They match." if row.get("correct") is True else "They do not match."))
+    if kind == "numeric" and "value" in checks:
+        outcome = ("within the allowed difference" if checks.get("within_tolerance") is True else
+                   "outside the allowed difference")
+        return (f"The checker read {checks['value']} as the final number. The expected number is {reference}. "
+                f"The saved rule allows a difference of up to {checks.get('tolerance', 'not recorded')}; "
+                f"this answer is {outcome}.")
+    if kind == "short_answer" and "accepted_form" in checks:
+        return ("The checker ignored capital letters and extra spaces, then compared the answer with the "
+                "saved accepted wording. " + ("It matched." if checks["accepted_form"] is True else "It did not match."))
+    labels = {"valid_json_object": "Answer is valid JSON", "bullet_count": "Bullet count matches the rule",
+              "syntax_valid": "Python syntax can be read", "function_name": "Required function name is present",
+              "signature": "Function inputs match the rule", "word_range": "Length is within the word limit",
+              "entity_coverage": "Required terms are present"}
+    statements = []
+    for key, value in checks.items():
+        if type(value) is not bool:
+            continue
+        label = labels.get(key)
+        if key.startswith("required_key:"):
+            label = f"Required field {key.split(':', 1)[1]} is present"
+        elif key.startswith("required_json_value:"):
+            label = f"Field {key.split(':', 1)[1]} has its required value"
+        elif key.startswith("forbidden_string:"):
+            label = f"Disallowed text {key.split(':', 1)[1]} is absent"
+        if label:
+            statements.append(f"{'Pass' if value else 'Needs attention'}: {label}.")
+    if kind in ("code_syntax", "summary_constraints"):
+        statements.append("These checks cover form only. A person must judge whether the answer is actually good.")
+    return "\n".join(statements[:9]) or (row.get("explanation") or "The saved check has no plain-language detail.")
+
+
 def walkthrough_html(row):
     """A self-contained, accessible animation of one saved evaluation record."""
     def safe(value):
@@ -371,20 +451,20 @@ def walkthrough_html(row):
 
     if row["score_status"] == "scored" and type(row["correct"]) is bool:
         decision = "Correct" if row["correct"] else "Incorrect"
-        decision_note = "This answer has an objective score under the declared rule."
+        decision_note = "This result follows the saved rule for this question. It does not describe the model's overall ability."
     elif row["score_status"] == "review":
-        decision, decision_note = "Needs human review", "A proxy check cannot establish correctness."
+        decision, decision_note = "Needs human review", "The automatic checks cover form, so a person must judge the answer."
     elif row["score_status"] == "invalid":
         decision, decision_note = "Invalid answer", "No objective correctness score is assigned."
     else:
         decision, decision_note = "No score yet", "Pending or failed requests are not counted as wrong."
     steps = [
-        ("01", "The question", "A prompt from this project's saved dataset.", row["prompt"]),
-        ("02", "The model's answer", "The saved raw response. An empty response is not a wrong answer.",
+        ("01", "The question", "This is the exact question the model was given.", row["prompt"]),
+        ("02", "The model's answer", "This is what the model actually returned.",
          row["raw_answer"] if row["raw_answer"] is not None else "No saved answer"),
-        ("03", "The reference", "The project-authored expected answer.", row["reference_answer"]),
-        ("04", "The check", f"Declared scorer: {row['scorer'] or 'not recorded'}.",
-         row["explanation"] or "No saved scoring explanation."),
+        ("03", "The expected answer", "The project wrote this before the model answered.", row["reference_answer"]),
+        ("04", "How it was checked", "The checker used the rule written with this question.",
+         plain_rule_summary(row) + "\n\n" + plain_check_summary(row)),
         ("05", "The decision", decision_note, decision),
     ]
     cards = "".join(
@@ -483,6 +563,7 @@ def main():
       .studio-flow li {background:#fff;border:1px solid var(--line);border-radius:12px;padding:.9rem .75rem;font-size:.82rem;line-height:1.35;
         box-shadow:0 5px 14px #1e2a4408;}
       .studio-flow b {display:block;color:#5048e5;font-size:.66rem;letter-spacing:.12em;margin-bottom:.45rem;}
+      .studio-flow small {display:block;color:#677389;font-size:.72rem;line-height:1.35;margin-top:.45rem;}
       .studio-flow li:not(:last-child):after {content:'→';float:right;color:#aaa4e7;font-size:1.05rem;}
       [data-testid="stSelectbox"] [data-baseweb="select"]>div,[data-testid="stTextInput"] input,[data-testid="stNumberInput"] input {
         background:#fff!important;border-color:#ccd3e0!important;border-radius:10px!important;color:var(--ink)!important;}
@@ -545,11 +626,11 @@ def main():
     st.caption("START HERE  /  1. Explore the offline demo  →  2. Opt in to a live comparison if ready  →  3. Read saved answers below")
     st.markdown('<div class="section-kicker">The method at a glance</div>', unsafe_allow_html=True)
     st.markdown('''<ol class="studio-flow" aria-label="Evaluation steps">
-      <li><b>01 / INPUT</b>Project-authored dataset prompt</li>
-      <li><b>02 / REQUEST</b>Chosen model and route</li>
-      <li><b>03 / EVIDENCE</b>Saved raw response</li>
-      <li><b>04 / CHECK</b>Declared scorer, rules and checks</li>
-      <li><b>05 / READOUT</b>Scored, review or failed; compare matched items</li>
+      <li><b>01 / ASK</b>Give both models the same question<small>Project-authored dataset prompt</small></li>
+      <li><b>02 / ANSWER</b>Let each model respond<small>Chosen model and route</small></li>
+      <li><b>03 / SAVE</b>Keep exactly what it said<small>Saved raw response</small></li>
+      <li><b>04 / CHECK</b>Apply the written rule<small>Declared scorer, rules and checks</small></li>
+      <li><b>05 / EXPLAIN</b>Show why it passed or needs review<small>Compare the same questions</small></li>
     </ol>''', unsafe_allow_html=True)
     with st.expander("Research references and method notes"):
         st.caption("METHOD / This is a project-authored dataset, not a benchmark taken from the cited papers. Objective scores use declared checks; proxy checks need human review.")
@@ -593,6 +674,10 @@ def main():
     st.badge("Synthetic example" if synthetic else "Saved live record" if "UNVERIFIED" not in evidence
              else "Evidence type unverified", color="orange" if synthetic or "UNVERIFIED" in evidence else "blue")
     (st.warning if synthetic or "UNVERIFIED" in evidence else st.info)(evidence)
+    if synthetic:
+        st.write("**Practice data:** These answers were written for the demo. Use them to learn the steps; they do not tell us how a real model performs.")
+    else:
+        st.write("**Saved run:** You can see the questions, model answers, and checks that produced these results. Opening this run sends no new requests.")
     source = summary.get("source", config.get("source", "not recorded"))
     display_source = "OpenCode · saved live" if isinstance(source, str) and source.startswith("opencode") else source
     st.caption(f"Source: {display_source}  ·  "
@@ -611,8 +696,7 @@ def main():
                  "The results do not establish an overall model ranking.")
 
     st.subheader("See how one answer is evaluated")
-    st.write("Watch the saved question, model answer, reference, check, and decision in order. "
-             "Use Pause or Restart to control the tour. This only reads local records.")
+    st.write("The rule was written with the question, before the model answered. Watch how the app reads the saved answer, compares it with the expected answer, and reaches a decision. Use Pause or Restart at any time.")
     example_options = list(range(len(rows)))
     first_scored = next((i for i, row in enumerate(rows) if row["score_status"] == "scored"), 0)
     example_index = st.selectbox("Choose an answer to explain", example_options,
@@ -621,8 +705,15 @@ def main():
                                  key="walkthrough_example")
     if example_index is not None:
         follow_walkthrough = st.session_state.pop("walkthrough_follow", False)
-        st.iframe(walkthrough_html(rows[example_index]),
+        example = rows[example_index]
+        st.iframe(walkthrough_html(example),
                   height=470, alt="Animated explanation of one saved evaluation answer")
+        with st.expander("Read this answer's full scoring rule and checks"):
+            st.write("**The rule:** " + plain_rule_summary(example))
+            st.write("**What the saved check found:** " + plain_check_summary(example))
+            st.caption("Exact saved data for people who want to verify the details:")
+            st.code(json.dumps({"rules": example.get("rules") or {}, "checks": example.get("checks") or {}},
+                               ensure_ascii=False, indent=2), language="json")
         if follow_walkthrough:
             st.html("""<script>
               requestAnimationFrame(() => {
@@ -633,27 +724,33 @@ def main():
                 });
               });
             </script>""", unsafe_allow_javascript=True)
-    st.caption("This animation follows one saved record. For the full rule and recorded checks, open Answer inspector below.")
+    st.caption("This shows one saved answer. Open See every check below for the full rule and all recorded checks.")
 
     if len(models) == 2:
         overview, compare, categories, robustness, inspector = st.tabs(
-            ["Overview", "Compare answers", "By category", "Paired robustness", "Answer inspector"])
+            ["Overview", "Compare answers", "Question types", "Reworded questions", "See every check"])
     else:
         overview, categories, robustness, inspector = st.tabs(
-            ["Overview", "By category", "Paired robustness", "Answer inspector"])
+            ["Overview", "Question types", "Reworded questions", "See every check"])
         compare = None
     with overview:
-        st.header("Model coverage")
-        st.caption("Saved results only. A blank score means there are no objectively scored answers; pending and failed requests are not counted as wrong.")
+        st.header("What happened in this run?")
+        st.caption("The numbers below describe saved answers. A question with no answer is not counted as wrong.")
         focus = st.selectbox("Focus model", models, key="overview_model")
         focused = summary["models"].get(focus, {})
         correct, scored = focused.get("correct", 0), focused.get("scored", 0)
+        if scored:
+            st.write(f"**{MODEL_NAMES.get(focus, OPENCODE_MODELS.get(focus, focus))}:** {correct} of {scored} answers that could be checked automatically matched their saved rules. "
+                     f"{focused.get('review', 0)} need a person to judge; {focused.get('pending', 0)} are still waiting for an answer.")
+        else:
+            st.write("There are no answers with an automatic score for this model yet. Review and missing answers stay separate below.")
         cards = st.columns(4)
         cards[0].metric("Correct / scored", f"{correct}/{scored}" if scored else "—",
                         help="Only answers with an objective score count here.")
         cards[1].metric("Answered / total", f"{focused.get('answered', 0)}/{focused.get('total', len(items))}")
         cards[2].metric("For human review", focused.get("review", 0))
         cards[3].metric("Pending", focused.get("pending", 0))
+        st.caption("Correct / scored counts only questions with a definite automatic check. 'For human review' means the app cannot judge the whole answer on its own.")
         if scored:
             st.progress(correct / scored, text=f"{focus} · {correct}/{scored} scored ({correct / scored:.1%})")
         else:
@@ -733,7 +830,7 @@ def main():
                         st.warning("Truncated · no objective score" if status == "truncated" else "Request failed · no saved answer")
 
     with categories:
-        st.header("Capability slices")
+        st.header("Results by question type")
         st.caption("Each row uses its own model × category denominator from the frozen dataset; "
                    "review and missing answers are not treated as wrong.")
         category_table = []
@@ -756,7 +853,7 @@ def main():
                    "Neither gives a correctness rate without human review.")
 
     with robustness:
-        st.header("Original ↔ paraphrase")
+        st.header("Does rewording change the result?")
         st.caption("Only paired metrics already saved in summary.json are reported below. "
                    "Delta is original minus paraphrase in percentage points when present.")
         any_pairs = False
@@ -795,7 +892,7 @@ def main():
             st.info("No pair IDs in the frozen dataset.")
 
     with inspector:
-        st.header("Answer inspector")
+        st.header("See every check for an answer")
         st.caption("Follow one saved row from dataset input to decision. No requests are sent when you change filters or select a row.")
         left, middle, right = st.columns(3)
         selected_model = left.selectbox("Model", models, key="inspect_model")
