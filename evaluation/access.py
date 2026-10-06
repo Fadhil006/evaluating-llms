@@ -50,8 +50,8 @@ def _nonnegative_number(value):
 
 def preflight(max_requests: int) -> dict:
     """Check local credentials and key limits without dispatching completions."""
-    if type(max_requests) is not int or not 1 <= max_requests <= 40:
-        raise ValueError("max_requests must be between 1 and 40")
+    if type(max_requests) is not int or not 1 <= max_requests <= 50:
+        raise ValueError("max_requests must be between 1 and 50")
     key = os.environ.get("OPENROUTER_API_KEY")
     if key is None:
         key = _local_key()

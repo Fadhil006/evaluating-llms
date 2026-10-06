@@ -84,10 +84,21 @@ class AccessTests(unittest.TestCase):
     def test_bad_request_count_never_contacts_provider(self):
         os.environ["OPENROUTER_API_KEY"] = SECRET
         with patch("evaluation.access.build_opener") as opener:
-            for count in (True, 0, 41, 1.0, "1"):
+            for count in (True, 0, 51, 1.0, "1"):
                 with self.subTest(count=count), self.assertRaises(ValueError):
                     preflight(count)
             opener.assert_not_called()
+
+    def test_48_requires_48_free_requests(self):
+        os.environ["OPENROUTER_API_KEY"] = SECRET
+        with patch("evaluation.access.build_opener") as opener:
+            opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(DATA).encode())
+            with self.assertRaisesRegex(ValueError, "quota"):
+                preflight(48)
+            data = json.loads(json.dumps(DATA))
+            data["data"]["free_model_daily_requests"]["remaining"] = 48
+            opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
+            self.assertEqual(preflight(48)["free_remaining"], 48)
 
     def test_invalid_missing_or_insufficient_quotas_fail_closed(self):
         self.write_env(f"OPENROUTER_API_KEY=\"{SECRET}\"\n")

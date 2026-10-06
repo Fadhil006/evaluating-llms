@@ -35,13 +35,16 @@ class DashboardTests(unittest.TestCase):
             access = types.ModuleType("evaluation.access")
             access.preflight = Mock(return_value={"allowed": True})
             with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_live", return_value={"paused": False}) as live:
+                    "evaluation.runner.run_live_comparison", create=True,
+                    return_value={"paused": False, "models": {}}) as live:
                 page = AppTest.from_file(str(app)).run()
                 self.assertFalse(page.exception)
-                cap_input = next(box for box in page.number_input if box.label == "Total attempt cap for this run")
+                cap_input = next(box for box in page.number_input if box.label == "Total attempt cap for both models")
                 self.assertIn("earlier attempts and retries count", cap_input.help)
-                self.assertIn("cumulative run cap", page.checkbox[0].label)
-                self.assertIn("same model and dataset", page.text_input[0].help)
+                self.assertEqual(cap_input.max, 50)
+                self.assertIn("shared cumulative cap", page.checkbox[0].label)
+                self.assertIn("same two models", page.text_input[0].help)
+                self.assertTrue(any("4 prompts × 2 models = 8" in caption.value for caption in page.caption))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
 
@@ -50,6 +53,16 @@ class DashboardTests(unittest.TestCase):
                 access.preflight.assert_not_called()
                 live.assert_not_called()
 
+                page.checkbox[0].check()
+                next(box for box in page.selectbox if box.label == "Second free model / pinned route").set_value(
+                    "nvidia/nemotron-3-ultra-550b-a55b:free")
+                page = page.button[0].click().run()
+                self.assertTrue(any("two different models" in error.value for error in page.error))
+                access.preflight.assert_not_called()
+                live.assert_not_called()
+
+                next(box for box in page.selectbox if box.label == "Second free model / pinned route").set_value(
+                    "google/gemma-4-31b-it:free")
                 page.checkbox[0].check()
                 next(box for box in page.text_input if box.label == "Local run name").set_value("../outside")
                 page = page.button[0].click().run()
@@ -76,28 +89,110 @@ class DashboardTests(unittest.TestCase):
                                                  "api_key": "SECRET MUST NOT APPEAR"}
                 page.checkbox[0].check()
                 next(box for box in page.selectbox if box.label == "Dataset").set_value("benchmark.jsonl")
-                next(box for box in page.selectbox if box.label == "Free model / pinned route").set_value(
+                next(box for box in page.selectbox if box.label == "First free model / pinned route").set_value(
                     "qwen/qwen3.8-27b:free")
-                next(box for box in page.number_input if box.label == "Total attempt cap for this run").set_value(3)
+                next(box for box in page.number_input if box.label == "Total attempt cap for both models").set_value(3)
                 page = page.button[0].click().run()
                 self.assertFalse(page.exception)
                 access.preflight.assert_called_with(max_requests=3)
-                live.assert_called_once_with(home / "datasets/v1.0/benchmark.jsonl", home / "runs/my-dev",
-                                             "qwen/qwen3.8-27b:free", "modelrun/fp4", 3)
+                live.assert_called_once()
+                args, kwargs = live.call_args
+                self.assertEqual(args, (home / "datasets/v1.0/benchmark.jsonl", home / "runs/my-dev",
+                                        ["qwen/qwen3.8-27b:free", "google/gemma-4-31b-it:free"],
+                                        {"qwen/qwen3.8-27b:free": "modelrun/fp4",
+                                         "google/gemma-4-31b-it:free": "google-ai-studio"}, 3))
+                self.assertTrue(callable(kwargs["on_progress"]))
+                self.assertFalse(any(heading.value == "Latest saved response" for heading in page.subheader))
+                self.assertTrue(any("24 prompts × 2 models = 48" in caption.value and "partial" in caption.value
+                                    for caption in page.caption))
                 self.assertTrue(any("Free requests remaining: 10" in caption.value for caption in page.caption))
                 self.assertFalse(any("SECRET" in caption.value for caption in page.caption))
-                self.assertTrue(any("total cap 3 attempts for this run, including prior attempts" in message.value
+                self.assertTrue(any("shared cap 3 attempts for both models, including prior attempts" in message.value
                                     for message in page.success))
                 self.assertEqual(page.session_state["selected_run"], "my-dev")
                 page.run()
                 live.assert_called_once()
 
+    def test_live_progress_shows_saved_answer_and_objective_score(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            shutil.copyfile(ROOT / "app.py", home / "app.py")
+            access = types.ModuleType("evaluation.access")
+            access.preflight = Mock(return_value={"free_remaining": 50})
+            model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+            event = {"model": model, "item_id": "dr1-o", "prompt": "Which answer is right?",
+                     "reference_answer": "B", "answer": "B", "status": "ok",
+                     "score_status": "scored", "correct": True, "explanation": "Choice matches reference.",
+                     "completed": 1, "planned": 8, "attempts": 2,
+                     "summary": {"api_key": "SECRET MUST NOT APPEAR"}, "raw_payload": "SECRET MUST NOT APPEAR"}
+
+            def save_one(*args, on_progress):
+                on_progress(event)
+                return {"paused": False, "models": {}}
+
+            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
+                    "evaluation.runner.run_live_comparison", side_effect=save_one) as live:
+                page = AppTest.from_file(str(home / "app.py")).run()
+                access.preflight.assert_not_called()
+                live.assert_not_called()
+                page.checkbox[0].check()
+                page = page.button[0].click().run()
+                self.assertFalse(page.exception)
+                self.assertEqual(page.metric[0].value, "1/8")
+                self.assertEqual(page.metric[1].value, "2")
+                self.assertTrue(any("1/8 planned model answers saved" in getattr(p, "text", "")
+                                    for p in page.get("progress")))
+                self.assertTrue(any("Nemotron 3 Ultra · dr1-o" in h.value for h in page.subheader))
+                self.assertTrue(all(value in [block.value for block in page.code]
+                                    for value in ("Which answer is right?", "B", "Choice matches reference.")))
+                self.assertTrue(any("Objective score: Correct" in str(text.value) for text in page.markdown))
+                self.assertTrue(any("Score status: scored" in caption.value for caption in page.caption))
+                self.assertFalse(any("SECRET" in str(node.value) for kind in ("text", "caption", "code", "warning")
+                                     for node in page.get(kind)))
+                live.assert_called_once()
+
+    def test_live_progress_distinguishes_review_and_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            shutil.copyfile(ROOT / "app.py", home / "app.py")
+            access = types.ModuleType("evaluation.access")
+            access.preflight = Mock(return_value={"free_remaining": 50})
+            event = {"model": "google/gemma-4-31b-it:free", "item_id": "dm1-o", "prompt": "Compute 3 + 4",
+                     "reference_answer": "7", "answer": "Seven units", "status": "ok",
+                     "score_status": "review", "correct": None, "explanation": "Units need human review.",
+                     "completed": 2, "planned": 8, "attempts": 3}
+
+            def save_one(*args, on_progress):
+                on_progress(event)
+                return {"paused": True, "models": {}}
+
+            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
+                    "evaluation.runner.run_live_comparison", side_effect=save_one):
+                page = AppTest.from_file(str(home / "app.py")).run()
+                page.checkbox[0].check()
+                page = page.button[0].click().run()
+                self.assertFalse(page.exception)
+                self.assertTrue(any("Needs human review" in info.value for info in page.info))
+                self.assertTrue(any("Score status: review" in caption.value for caption in page.caption))
+                self.assertTrue(any(block.value == "Units need human review." for block in page.code))
+
+                event.update(status="rate_limited", score_status=None, correct=None,
+                             explanation=None, answer=None, attempts=4)
+                page.checkbox[0].check()
+                page = page.button[0].click().run()
+                self.assertFalse(page.exception)
+                self.assertTrue(any("Rate limited" in warning.value for warning in page.warning))
+                self.assertFalse(any("Objective score:" in str(text.value) for text in page.markdown))
+
     def test_capped_run_feedback_and_same_item_comparison(self):
-        level, message = run_feedback({"paused": False, "models": {"m": {"pending": 2}}}, "m")
+        level, message = run_feedback({"paused": False, "models": {"m": {"pending": 2, "answered": 2, "total": 4},
+                                                                  "n": {"pending": 3, "answered": 1, "total": 4}}}, ["m", "n"])
         self.assertEqual(level, "warning")
-        self.assertIn("2 items still pending", message)
-        self.assertEqual(run_feedback({"paused": True}, "m")[0], "warning")
-        self.assertEqual(run_feedback({"paused": False, "models": {"m": {"pending": 0}}}, "m")[0], "success")
+        self.assertIn("5 answers still pending", message)
+        self.assertIn("m: 2/4 answered", message)
+        self.assertIn("n: 1/4 answered", message)
+        self.assertEqual(run_feedback({"paused": True}, ["m", "n"])[0], "warning")
+        self.assertEqual(run_feedback({"paused": False, "models": {"m": {"pending": 0}}}, ["m", "n"])[0], "success")
         rows = [{"model": "a", "item_id": "one", "correct": True},
                 {"model": "b", "item_id": "one", "correct": False},
                 {"model": "a", "item_id": "two", "correct": True},
@@ -180,6 +275,30 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(dashboard.exception)
             self.assertTrue(any(block.value == "7" for block in dashboard.code))
             self.assertTrue(any("Showing 1 of 4" in caption.value for caption in dashboard.caption))
+
+    def test_saved_two_model_run_shows_matched_comparison_without_requests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            shutil.copyfile(ROOT / "app.py", home / "app.py")
+            fixtures = home / "fixtures.json"
+            fixtures.write_text(json.dumps({"first": {"dr1-o": "B", "dr1-p": "B", "dm1-o": "7", "dm1-p": "7"},
+                                            "second": {"dr1-o": "A", "dr1-p": "B", "dm1-o": "7",
+                                                       "dm1-p": {"status": 429}}}), encoding="utf-8")
+            run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, home / "runs" / "pair", ["first", "second"])
+            access = types.ModuleType("evaluation.access")
+            access.preflight = Mock()
+            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
+                    "evaluation.runner.run_live_comparison", create=True) as live:
+                page = AppTest.from_file(str(home / "app.py")).run()
+                self.assertFalse(page.exception)
+                self.assertTrue(any(heading.value == "Same-item comparison" for heading in page.subheader))
+                matched = next(frame.value for frame in page.dataframe if "Shared scored items" in frame.value.columns)
+                self.assertEqual(matched["Correct / matched"].tolist(), ["3/3", "2/3"])
+                self.assertTrue(any("Partial comparison" in info.value for info in page.info))
+                self.assertTrue(any("first ·" in getattr(progress, "text", "") for progress in page.get("progress")))
+                self.assertTrue(any("second ·" in getattr(progress, "text", "") for progress in page.get("progress")))
+                access.preflight.assert_not_called()
+                live.assert_not_called()
 
 
 if __name__ == "__main__":

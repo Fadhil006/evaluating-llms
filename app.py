@@ -45,22 +45,31 @@ def control_panel():
     with st.container(border=True, key="workbench"):
         st.caption("01  /  RUN WORKBENCH")
         st.header("Make a careful run.")
-        st.write("Choose one model and one dataset. Nothing is sent until you confirm and start.")
+        st.write("Choose two models for the same dataset. Nothing is sent until you confirm and start.")
         with st.form("live_run", clear_on_submit=False):
             a, b = st.columns(2)
             dataset = a.selectbox("Dataset", ["dev.jsonl", "benchmark.jsonl"],
                                   format_func=lambda name: "Development · dev" if name == "dev.jsonl" else "Held-out · test")
-            model = b.selectbox("Free model / pinned route", list(MODEL_PROVIDERS),
-                                format_func=lambda name: f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}")
-            st.caption(f"Exact model ID: {model}")
+            models = [b.selectbox("First free model / pinned route", list(MODEL_PROVIDERS),
+                                  format_func=lambda name: f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}"),
+                      b.selectbox("Second free model / pinned route", list(MODEL_PROVIDERS), index=1,
+                                  format_func=lambda name: f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}")]
+            st.caption("Exact model IDs: " + "  ·  ".join(models))
             c, d = st.columns(2)
-            run_name = c.text_input("Local run name", value="pilot-dev", help="Reuse a name only to resume the same model and dataset; otherwise choose a new name.")
-            cap = d.number_input("Total attempt cap for this run", min_value=1, max_value=40, value=2, step=1,
-                                 help="Cumulative across this run: earlier attempts and retries count when resuming. Not a per-click allowance.")
+            run_name = c.text_input("Local run name", value="pilot-dev", help="Reuse a name only to resume the same two models, their order, and dataset; otherwise choose a new name.")
+            cap = d.number_input("Total attempt cap for both models", min_value=1, max_value=50, value=8, step=1,
+                                 help="One shared cap across both models; earlier attempts and retries count when resuming. Not a per-click allowance.")
+            workload = 8 if dataset == "dev.jsonl" else 48
+            st.caption(f"WORKLOAD  /  {'Development: 4' if dataset == 'dev.jsonl' else 'Held-out: 24'} prompts × 2 models = {workload} planned answers. "
+                       + (f"Cap {int(cap)} is below {workload}: this comparison will be partial." if cap < workload else
+                          f"Cap {int(cap)} covers planned answers; retries also use the shared cap."))
             st.caption("CHECKPOINT  /  The key stays local. A free listing does not guarantee quota or zero billing.")
-            confirmed = st.checkbox("I confirm outbound API requests to this free model within the cumulative run cap, subject to local quota and spend-cap checks.")
-            submitted = st.form_submit_button("Check access & start run", type="primary")
+            confirmed = st.checkbox("I confirm outbound API requests to both selected free models within the shared cumulative cap, subject to local quota and spend-cap checks.")
+            submitted = st.form_submit_button("Check access & start comparison", type="primary")
     if not submitted:
+        return
+    if len(set(models)) != 2 or any(model not in MODEL_PROVIDERS for model in models):
+        st.error("Choose two different models before starting. Nothing was sent.")
         return
     if not confirmed:
         st.warning("Confirm outbound requests before starting. Nothing was sent.")
@@ -79,7 +88,8 @@ def control_panel():
     except Exception:
         st.error("Access check blocked this run. Check your local key, quota and spend cap. No model request was started.")
         return
-    st.success(f"Local access check passed · total cap {int(cap)} attempts for this run, including prior attempts · pinned route: {MODEL_PROVIDERS[model]}.")
+    st.success(f"Local access check passed · shared cap {int(cap)} attempts for both models, including prior attempts · pinned routes: "
+               + " · ".join(f"{MODEL_NAMES[model]} → {MODEL_PROVIDERS[model]}" for model in models) + ".")
     # Whitelist only numerical quota/cap fields; never render arbitrary backend data or credentials.
     labels = {"free_remaining": "Free requests remaining", "free_limit": "Daily free limit",
               "spend_limit": "Key spend cap", "spend_remaining": "Spend cap remaining"}
@@ -87,15 +97,61 @@ def control_panel():
                 if type(access.get(key)) in (int, float)]
     if metadata:
         st.caption(" · ".join(metadata))
+    progress_area = st.empty()
+
+    def show_saved_response(event):
+        """Render only fields from a saved-response event, never provider metadata."""
+        if not isinstance(event, dict) or event.get("model") not in models:
+            return
+        completed, planned, attempts = (event.get(key) for key in ("completed", "planned", "attempts"))
+        if (any(type(value) is not int for value in (completed, planned, attempts)) or
+                not 0 <= completed <= planned or planned < 1 or attempts < 0):
+            return
+        status = event.get("status")
+        statuses = {"ok": "Answer saved", "rate_limited": "Rate limited · awaiting retry",
+                    "error": "Request failed", "truncated": "Answer truncated"}
+        score = event.get("score_status")
+        with progress_area.container(border=True):
+            st.caption("02  /  LATEST SAVED RESPONSE")
+            st.subheader(f"{MODEL_NAMES[event['model']]} · {str(event.get('item_id', ''))}")
+            a, b = st.columns(2)
+            a.metric("Saved outcomes", f"{completed}/{planned}")
+            b.metric("Cumulative attempts", attempts)
+            st.progress(completed / planned, text=f"{completed}/{planned} planned model answers saved")
+            st.caption("Latest response only · full history appears in the saved-run viewer below.")
+            st.write("Question")
+            st.code(str(event.get("prompt") or "Not recorded"), language="text")
+            if status == "ok":
+                st.write("Model answer")
+                st.code(str(event.get("answer") if event.get("answer") is not None else "No saved answer"), language="text")
+            else:
+                st.warning(statuses.get(status, "Request did not produce a scored answer"))
+            st.write("Expected answer")
+            st.code(str(event.get("reference_answer") or "Not recorded"), language="text")
+            if status == "ok":
+                if score == "scored" and type(event.get("correct")) is bool:
+                    st.write(f"Objective score: {'Correct' if event['correct'] else 'Incorrect'}")
+                elif score == "review":
+                    st.info("Needs human review · not an objective correctness score.")
+                else:
+                    st.warning("Invalid or unscored answer · not an objective correctness score.")
+                if score in ("scored", "review", "invalid"):
+                    st.caption(f"Score status: {score}")
+                if isinstance(event.get("explanation"), str) and event["explanation"]:
+                    st.write("Scoring explanation")
+                    st.code(event["explanation"], language="text")
+
     try:
-        from evaluation.runner import run_live
-        with st.spinner("Sending confirmed requests and saving responses locally…"):
-            result = run_live(DATASETS / dataset, folder, model, MODEL_PROVIDERS[model], int(cap))
+        from evaluation.runner import run_live_comparison
+        with st.spinner("Waiting for saved responses from both models within the shared cap…"):
+            result = run_live_comparison(DATASETS / dataset, folder, models,
+                                         {model: MODEL_PROVIDERS[model] for model in models}, int(cap),
+                                         on_progress=show_saved_response)
     except Exception:
         st.error("Run paused or failed. Inspect saved records locally before any manual retry; no automatic retry was started.")
         return
     st.session_state["selected_run"] = folder.name
-    level, message = run_feedback(result, model)
+    level, message = run_feedback(result, models)
     getattr(st, level)(message)
 
 
@@ -211,16 +267,20 @@ def rate(counts):
             f'({counts["correct"] / counts["scored"]:.1%})' if counts["scored"] else "— (0 scored)")
 
 
-def run_feedback(result, model):
+def run_feedback(result, models):
     """Describe saved progress without calling a capped, incomplete run finished."""
-    counts = result.get("models", {}).get(model, {})
-    pending = counts.get("pending", 0)
+    progress = ", ".join(f"{MODEL_NAMES.get(model, model)}: "
+                         f"{result.get('models', {}).get(model, {}).get('answered', 0)}/"
+                         f"{result.get('models', {}).get(model, {}).get('total', 0)} answered, "
+                         f"{result.get('models', {}).get(model, {}).get('pending', 0)} pending"
+                         for model in models)
+    pending = sum(result.get("models", {}).get(model, {}).get("pending", 0) for model in models)
     if result.get("paused"):
-        return "warning", "Run paused. Saved results are below; inspect the cause before resuming."
+        return "warning", f"Comparison paused. {progress}. Inspect saved records before resuming."
     if pending:
-        return "warning", (f"Request cap reached with {pending} item{'s' if pending != 1 else ''} "
-                           "still pending. Saved results are below; increase the cumulative cap to continue.")
-    return "success", "All planned items have a saved outcome. Inspect the results below."
+        return "warning", (f"Partial comparison: {pending} answer{'s' if pending != 1 else ''} still pending. "
+                           f"{progress}. The shared cap may limit coverage; inspect saved records before increasing it.")
+    return "success", f"Both models have saved outcomes. {progress}. Inspect the results below."
 
 
 def matched_comparison(rows, models):
@@ -351,7 +411,7 @@ def main():
                     'Viewing saved evidence never sends requests.</div>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="studio-aside"><span class="studio-index" style="color:#a6d7bf">THE METHOD</span>'
-                    '<strong>Choose. Confirm. Inspect.</strong><small>One pinned route at a time. '
+                     '<strong>Choose. Confirm. Inspect.</strong><small>Two pinned routes, one shared cap. '
                     'Every answer stays available for review.</small></div>', unsafe_allow_html=True)
     with st.expander("Start or resume a live run", expanded=False):
         control_panel()
@@ -401,7 +461,7 @@ def main():
                f"Dataset: {config.get('dataset_version', 'not recorded')}")
     with st.expander("Run provenance and frozen dataset hash"):
         st.code(config.get("dataset_hash", "not recorded"), language="text")
-        st.write("Model route:", config.get("provider", "offline fixture"))
+        st.write("Model routes:", config.get("providers", config.get("provider", "offline fixture")))
         st.write("Created:", config.get("created_at", "not recorded"))
     with st.expander("How to read these results"):
         st.write("Correct / scored includes only objectively scored answers. Review, invalid, failed, "
@@ -443,6 +503,16 @@ def main():
                                 "Failures": counts.get("failures", "—"), "Truncated": counts.get("truncated", "—"),
                                 "Pending": counts.get("pending", "—")})
         st.dataframe(model_table, width="stretch", hide_index=True)
+        if len(models) > 1:
+            st.caption("COVERAGE  /  SAVED OUTCOMES BY MODEL")
+            for model in models:
+                counts = summary["models"].get(model, {})
+                total = counts.get("total", len(items))
+                completed = total - counts.get("pending", total)
+                if total:
+                    st.progress(completed / total, text=f"{MODEL_NAMES.get(model, model)} · {completed}/{total} saved outcomes")
+            if any(summary["models"].get(model, {}).get("pending", 0) for model in models):
+                st.info("Partial comparison: pending answers are not counted as wrong. Same-item rates below use only shared scored items.")
         matched = matched_comparison(rows, models)
         if matched:
             st.subheader("Same-item comparison")

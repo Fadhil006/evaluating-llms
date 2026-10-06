@@ -110,20 +110,21 @@ def _config(items, models, synthetic, source):
 
 def _validate_live_logs(config, items, attempts, responses):
     """Validate durable intent/response linkage before reports or dispatch."""
-    model = config["models"][0]
+    models = config["models"]
     by_id = {item["id"] for item in items}
     try:
         ids = [a["attempt_id"] for a in attempts]
-        if (len(ids) > 40 or len(ids) != len(set(ids)) or any(
+        if (len(ids) > (50 if len(models) == 2 else 40) or len(ids) != len(set(ids)) or any(
                 not isinstance(a["attempt_id"], str) or not a["attempt_id"] or
-                a["model"] != model or a["item_id"] not in by_id or a["synthetic"] is not False
+                a["model"] not in models or a["item_id"] not in by_id or a["synthetic"] is not False
                 for a in attempts)):
             raise ValueError("invalid attempt log")
         by_attempt = {a["attempt_id"]: a for a in attempts}
         seen = set()
         for response in responses:
             aid = response["attempt_id"]
-            if (aid in seen or aid not in by_attempt or response["model"] != model or
+            if (aid in seen or aid not in by_attempt or
+                    response["model"] != by_attempt[aid]["model"] or
                     response["item_id"] != by_attempt[aid]["item_id"] or
                     response["synthetic"] is not False):
                 raise ValueError("orphan or mismatched live response")
@@ -259,23 +260,54 @@ def run_live(dataset, run_dir, model, provider, max_requests=4):
         return _run_live_unlocked(dataset, Path(run_dir), model, provider, max_requests)
 
 
+def run_live_comparison(dataset, run_dir, models, providers, max_requests, on_progress=None):
+    """Run two pinned free models against one frozen dataset and shared budget."""
+    from .openrouter import FREE_MODELS
+
+    if (not isinstance(models, (list, tuple)) or len(models) != 2 or
+            any(not isinstance(model, str) or model not in FREE_MODELS for model in models) or
+            models[0] == models[1]):
+        raise ValueError("exactly two distinct allowed :free models required")
+    if (not isinstance(providers, dict) or providers.keys() != set(models) or
+            any(not isinstance(provider, str) or not provider.strip()
+                for provider in providers.values())):
+        raise ValueError("each model requires an explicit pinned provider slug")
+    with _locked(run_dir):
+        return _run_live_models_unlocked(dataset, Path(run_dir), list(models),
+                                         {model: providers[model].strip() for model in models},
+                                         max_requests, comparison=True, on_progress=on_progress)
+
+
 def _run_live_unlocked(dataset, run_dir, model, provider, max_requests):
     """Opt-in live run; unresolved attempts block all automatic redispatch."""
-    from .openrouter import FREE_MODELS, generate
+    from .openrouter import FREE_MODELS
 
     if model not in FREE_MODELS or not isinstance(provider, str) or not provider.strip():
         raise ValueError("explicit allowed :free model and nonempty provider required")
-    if type(max_requests) is not int or not 1 <= max_requests <= 40:
-        raise ValueError("max-requests must be between 1 and 40")
+    return _run_live_models_unlocked(dataset, run_dir, [model], {model: provider.strip()},
+                                     max_requests)
+
+
+def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
+                              comparison=False, on_progress=None):
+    """Dispatch with one cumulative budget; never retry an unresolved attempt."""
+    from .openrouter import generate
+
+    ceiling = 50 if comparison else 40
+    if type(max_requests) is not int or not 1 <= max_requests <= ceiling:
+        raise ValueError(f"max-requests must be between 1 and {ceiling}")
     if not os.environ.get("OPENROUTER_API_KEY", "").strip():
         raise ValueError("OPENROUTER_API_KEY is required")
-    provider = provider.strip()
     dataset, run_dir = Path(dataset), Path(run_dir)
     items = load_dataset(dataset)
-    config = {**_config(items, [model], False, "openrouter_live"), "provider": provider,
-              "system_prompt": SYSTEM_PROMPT, "prompt_template": PROMPT_TEMPLATE,
-              "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS,
-              "code_version": "0.1.0"}
+    config = {**_config(items, models, False, "openrouter_live"),
+               "system_prompt": SYSTEM_PROMPT, "prompt_template": PROMPT_TEMPLATE,
+               "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS,
+               "code_version": "0.1.0"}
+    if comparison:
+        config["providers"] = providers
+    else:
+        config["provider"] = providers[models[0]]
     _prepare(run_dir, items, config)
     attempts = _records(run_dir / "attempts.jsonl")
     responses = _records(run_dir / "responses.jsonl")
@@ -286,78 +318,93 @@ def _run_live_unlocked(dataset, run_dir, model, provider, max_requests):
                               "reported cost is positive", "returned provider differs from requested slug")
            for r in responses):
         raise ValueError("suspicious routing or billing; inspect saved records before resuming")
-    done = {r["item_id"] for r in responses if r["status"] != "rate_limited"}
+    done = {(r["model"], r["item_id"]) for r in responses if r["status"] != "rate_limited"}
     paused = False
     # Budget is cumulative per run, not reset by restarting the process.
-    for item in items:
-        if item["id"] in done or len(attempts) >= max_requests:
-            continue
-        if attempts:
-            time.sleep(3)
-        intent = {"attempt_id": uuid4().hex, "model": model, "item_id": item["id"],
-                  "started_at": _timestamp(), "synthetic": False}
-        _append(run_dir / "attempts.jsonl", intent)
-        attempts.append(intent)
-        start = time.perf_counter()
-        try:
-            reply = generate(model, PROMPT_TEMPLATE.format(prompt=item["prompt"]),
-                             SYSTEM_PROMPT, provider, temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
-        except RuntimeError as exc:
-            # Only known HTTP classifications are definite responses; do not persist exception text.
-            message = str(exc)
-            if message == "OpenRouter HTTP 429 rate limited":
-                status, error = "rate_limited", "HTTP 429"
-            elif message.startswith("OpenRouter HTTP 5xx (") or message.startswith("OpenRouter HTTP 4xx ("):
-                status, error = "error", "HTTP 5xx" if "5xx" in message else "HTTP 4xx"
-            else:
-                # Timeout/transport/unknown failure may have reached the provider.
+    for model in models:
+        for item in items:
+            if (model, item["id"]) in done or len(attempts) >= max_requests:
+                continue
+            provider = providers[model]
+            if attempts:
+                time.sleep(3)
+            intent = {"attempt_id": uuid4().hex, "model": model, "item_id": item["id"],
+                      "started_at": _timestamp(), "synthetic": False}
+            _append(run_dir / "attempts.jsonl", intent)
+            attempts.append(intent)
+            start = time.perf_counter()
+            try:
+                reply = generate(model, PROMPT_TEMPLATE.format(prompt=item["prompt"]),
+                                 SYSTEM_PROMPT, provider, temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
+            except RuntimeError as exc:
+                # Only known HTTP classifications are definite responses; do not persist exception text.
+                message = str(exc)
+                if message == "OpenRouter HTTP 429 rate limited":
+                    status, error = "rate_limited", "HTTP 429"
+                elif message.startswith("OpenRouter HTTP 5xx (") or message.startswith("OpenRouter HTTP 4xx ("):
+                    status, error = "error", "HTTP 5xx" if "5xx" in message else "HTTP 4xx"
+                else:
+                    # Timeout/transport/unknown failure may have reached the provider.
+                    paused = True
+                    break
+                reply = None
+            except Exception:
                 paused = True
                 break
-            reply = None
-        except Exception:
-            paused = True
-            break
-        else:
-            usage = reply.get("usage") or {}
-            try:
-                reported_cost = float(usage.get("cost", 0))
-            except (TypeError, ValueError, OverflowError):
-                reported_cost = float("nan")
-            returned_provider_slug = reply.get("returned_provider_slug")
-            if not math.isfinite(reported_cost) or reported_cost > 0:
-                status, error = "error", "reported cost is positive"
-            elif reply.get("returned_model") not in (None, model):
-                status, error = "error", "returned model differs from requested ID"
-            elif returned_provider_slug is not None and returned_provider_slug != provider:
-                # Only the returned slug is comparable; provider can be a display name.
-                status, error = "error", "returned provider differs from requested slug"
             else:
-                status, error = (("truncated", None) if reply.get("finish_reason") == "length"
-                                 else ("ok", None))
-        record = {"attempt_id": intent["attempt_id"], "synthetic": False, "model": model,
-                  "item_id": item["id"], "status": status, "error": error,
-                  "answer": reply["answer"] if reply is not None else None,
-                  "raw_answer": reply["raw_response"] if reply is not None else None,
-                  "returned_model": reply.get("returned_model") if reply else None,
-                  "provider": reply.get("provider") if reply else None,
-                  "returned_provider_slug": reply.get("returned_provider_slug") if reply else None,
-                  "usage": {k: (reply.get("usage") or {}).get(k) for k in
-                            ("prompt_tokens", "completion_tokens", "total_tokens") if
-                            k in (reply.get("usage") or {})} | (
-                                {"cost": reported_cost if math.isfinite(reported_cost) else None}
-                                if reply and "cost" in (reply.get("usage") or {}) else {})
-                            if reply else None,
-                  "finish_reason": reply.get("finish_reason") if reply else None,
-                  "generation_id": reply.get("generation_id") if reply else None,
-                  "started_at": intent["started_at"], "finished_at": _timestamp(),
-                  "latency_ms": (time.perf_counter() - start) * 1000}
-        _append(run_dir / "responses.jsonl", record)
-        responses.append(record)
-        result = _reanalyze_unlocked(run_dir)
-        if status == "rate_limited" or error in ("returned model differs from requested ID",
-                                                 "reported cost is positive",
-                                                 "returned provider differs from requested slug"):
-            paused = True
+                usage = reply.get("usage") or {}
+                try:
+                    reported_cost = float(usage.get("cost", 0))
+                except (TypeError, ValueError, OverflowError):
+                    reported_cost = float("nan")
+                returned_provider_slug = reply.get("returned_provider_slug")
+                if not math.isfinite(reported_cost) or reported_cost > 0:
+                    status, error = "error", "reported cost is positive"
+                elif reply.get("returned_model") not in (None, model):
+                    status, error = "error", "returned model differs from requested ID"
+                elif returned_provider_slug is not None and returned_provider_slug != provider:
+                    # Only the returned slug is comparable; provider can be a display name.
+                    status, error = "error", "returned provider differs from requested slug"
+                else:
+                    status, error = (("truncated", None) if reply.get("finish_reason") == "length"
+                                     else ("ok", None))
+            record = {"attempt_id": intent["attempt_id"], "synthetic": False, "model": model,
+                      "item_id": item["id"], "status": status, "error": error,
+                      "answer": reply["answer"] if reply is not None else None,
+                      "raw_answer": reply["raw_response"] if reply is not None else None,
+                      "returned_model": reply.get("returned_model") if reply else None,
+                      "provider": reply.get("provider") if reply else None,
+                      "returned_provider_slug": reply.get("returned_provider_slug") if reply else None,
+                      "usage": {k: (reply.get("usage") or {}).get(k) for k in
+                                ("prompt_tokens", "completion_tokens", "total_tokens") if
+                                k in (reply.get("usage") or {})} | (
+                                    {"cost": reported_cost if math.isfinite(reported_cost) else None}
+                                    if reply and "cost" in (reply.get("usage") or {}) else {})
+                                if reply else None,
+                      "finish_reason": reply.get("finish_reason") if reply else None,
+                      "generation_id": reply.get("generation_id") if reply else None,
+                      "started_at": intent["started_at"], "finished_at": _timestamp(),
+                      "latency_ms": (time.perf_counter() - start) * 1000}
+            _append(run_dir / "responses.jsonl", record)
+            responses.append(record)
+            result = _reanalyze_unlocked(run_dir)
+            if on_progress is not None:
+                saved_score = next((score for score in reversed(_records(run_dir / "scores.jsonl"))
+                                    if score["model"] == model and score["item_id"] == item["id"]), None)
+                on_progress({"model": model, "item_id": item["id"], "prompt": item["prompt"],
+                             "reference_answer": item["reference_answer"], "answer": record["answer"],
+                             "status": status, "score_status": saved_score["status"] if saved_score else None,
+                             "correct": saved_score["correct"] if saved_score else None,
+                             "explanation": saved_score["explanation"] if saved_score else None,
+                             "completed": sum(r["status"] != "rate_limited" for r in responses),
+                             "planned": len(items) * 2, "attempts": len(attempts),
+                             "summary": result.copy()})
+            if status == "rate_limited" or error in ("returned model differs from requested ID",
+                                                      "reported cost is positive",
+                                                      "returned provider differs from requested slug"):
+                paused = True
+                break
+        if paused:
             break
     result["paused"] = paused
     result["unresolved_attempts"] = sum(a["attempt_id"] not in
