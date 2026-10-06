@@ -8,6 +8,24 @@ import tempfile
 
 ALLOWED_MODELS = ("opencode/ling-3.1-flash-free", "opencode/nemotron-3-ultra-free")
 MAX_OUTPUT = 1_000_000
+ERROR_NAMES = ("ProviderAuthError", "ProviderModelNotFoundError", "APIError",
+               "ContextOverflowError", "MessageAbortedError", "MessageOutputLengthError")
+
+
+def _error_name(event):
+    if event.get("type") not in ("error", "session.error"):
+        return None
+    error = event.get("error")
+    if not isinstance(error, dict):
+        properties = event.get("properties")
+        error = properties.get("error") if isinstance(properties, dict) else None
+    if not isinstance(error, dict):
+        return None
+    data = error.get("data")
+    for name in (error.get("name"), data.get("name") if isinstance(data, dict) else None):
+        if isinstance(name, str) and name in ERROR_NAMES:
+            return name
+    return None
 
 
 def generate(model, prompt):
@@ -24,13 +42,21 @@ def generate(model, prompt):
                 stdout=output_file, stderr=subprocess.DEVNULL, timeout=120, check=False)
             output_file.seek(0)
             output = output_file.read(MAX_OUTPUT + 1)
-            if result.returncode or len(output) > MAX_OUTPUT:
+            if len(output) > MAX_OUTPUT:
                 raise RuntimeError("OpenCode generation failed")
             output = output.decode("utf-8")
+            events = [json.loads(line) for line in output.splitlines()]
+            if not all(isinstance(event, dict) for event in events):
+                raise RuntimeError("OpenCode generation failed")
+            if result.returncode:
+                for event in events:
+                    name = _error_name(event)
+                    if name:
+                        raise RuntimeError(f"OpenCode {name}") from None
+                raise RuntimeError("OpenCode generation failed")
             parts = []
-            for line in output.splitlines():
-                event = json.loads(line)
-                if not isinstance(event, dict) or event.get("type") in ("error", "session.error") or (
+            for event in events:
+                if event.get("type") in ("error", "session.error") or (
                         "error" in event and event["error"] is not None):
                     raise RuntimeError("OpenCode generation failed")
                 part = event.get("part") or {}
@@ -47,5 +73,5 @@ def generate(model, prompt):
             if not answer:
                 raise RuntimeError("OpenCode generation failed")
             return {"answer": answer, "raw_response": answer}
-        except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError, TypeError) as exc:
+        except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError, TypeError):
             raise RuntimeError("OpenCode generation failed") from None

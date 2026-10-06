@@ -37,7 +37,10 @@ class OpenCodeTests(unittest.TestCase):
         outputs = ((1, b"private"), (0, b"not json private"),
                    (0, b'{"type":"error","error":"private"}'),
                    (0, b'{"type":"text","part":{"type":"text","text":" "}}'),
-                   (0, b"x" * (MAX_OUTPUT + 1)))
+                   (0, b"x" * (MAX_OUTPUT + 1)),
+                   (1, b'{"type":"error","error":{"name":"SecretError","message":"private"}}'),
+                   (1, b'{"type":"error","error":{"name":"APIError"}}\nprivate'),
+                   (1, b"x" * (MAX_OUTPUT + 1)))
         for outcome in (*outputs, subprocess.TimeoutExpired("opencode", 120, output=b"private"),
                         FileNotFoundError("private")):
             def run(argv, **kwargs):
@@ -50,6 +53,20 @@ class OpenCodeTests(unittest.TestCase):
                                                              side_effect=run):
                 with self.assertRaisesRegex(RuntimeError, "OpenCode generation failed") as caught:
                     generate(ALLOWED_MODELS[0], "prompt")
+                self.assertNotIn("private", str(caught.exception))
+
+    def test_nonzero_json_error_only_reports_allowlisted_name(self):
+        for error in ({"name": "ProviderAuthError", "message": "private", "stack": "private"},
+                      {"data": {"name": "APIError", "message": "private"}}):
+            def run(argv, **kwargs):
+                kwargs["stdout"].write(json.dumps({"type": "error", "error": error}).encode())
+                return SimpleNamespace(returncode=1)
+
+            with self.subTest(error=error), patch("evaluation.opencode.subprocess.run", side_effect=run):
+                with self.assertRaises(RuntimeError) as caught:
+                    generate(ALLOWED_MODELS[0], "prompt")
+                expected = error.get("name") or error["data"]["name"]
+                self.assertEqual(str(caught.exception), f"OpenCode {expected}")
                 self.assertNotIn("private", str(caught.exception))
 
     def test_disallowed_model_never_spawns(self):
