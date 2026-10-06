@@ -1,0 +1,29 @@
+# Local credentials and secret files
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*credentials*.json
+
+# Local outputs and review records
+runs/
+reviews/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.egg-info/
+build/
+dist/

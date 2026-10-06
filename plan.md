@@ -12,7 +12,7 @@
 
 1. [Project Summary & Core Philosophy](#1-project-summary--core-philosophy)
 2. [Zero-Cost & Free-Tier Operational Rules](#2-zero-cost--free-tier-operational-rules)
-3. [Verified Four-Model Selection](#3-verified-four-model-selection)
+3. [Candidate Four-Model Selection](#3-candidate-four-model-selection)
 4. [Fair Model Comparison Framework](#4-fair-model-comparison-framework)
 5. [Evaluation Categories & Task Taxonomy](#5-evaluation-categories--task-taxonomy)
 6. [Request Budget & Free-Tier Optimization](#6-request-budget--free-tier-optimization)
@@ -41,15 +41,15 @@
 
 ## 1. Project Summary & Core Philosophy
 
-We are building a lightweight, extensible, and completely **zero-cost LLM evaluation platform** that:
+The target is a lightweight, extensible **zero-cost LLM evaluation platform**, conditional on verified endpoint routing, account limits, and actual billing, that:
 
-- Simultaneously evaluates **FOUR fixed, verified free-tier models** from distinct architectural families via OpenRouter.
+- Intends to evaluate **four candidate free-tier model IDs** from distinct architectural families via OpenRouter, subject to live access checks.
 - Assesses performance across **six core task categories**: General Reasoning, Mathematics, Coding, Knowledge, Summarization, and Instruction Following.
 - Implements strict **fair comparison protocols** where every model receives identical prompts, instructions, parameters, and scoring rules.
-- Incorporates an intelligent **response caching mechanism** and **incremental execution runner** to guarantee operation within OpenRouter's legitimate free-tier rate limits.
+- Proposes response caching and an incremental runner to help stay within legitimate free-tier rate limits; quotas and routing must be checked before live use.
 - Separates evaluation into **objective automated metrics**, **optional single/double human review**, and **optional zero-cost LLM judging**.
 - Provides a clean **Streamlit comparison dashboard** with drill-down to individual raw responses, latency, token counts, and scoring breakdowns.
-- Guarantees **100% reproducibility** by preserving immutable experiment configurations, raw provider outputs, and dataset fingerprints.
+- Preserves experiment configurations, raw provider outputs, and dataset fingerprints for historical replay; fresh samples may differ as hosted weights or provider routing change.
 
 ```mermaid
 flowchart LR
@@ -73,7 +73,7 @@ The initial implementation of this platform is designed strictly for **zero mone
 * **Rate Limits:** OpenRouter free tier enforces standard limits:
   - **20 Requests Per Minute (RPM)**
   - **50 Requests Per Day (RPD)** for standard free accounts (up to 1,000 RPD for accounts with historical usage).
-* **Cost Accounting:** All API requests on selected endpoints are recorded as **$0.00**, while token counts are preserved for future cost modeling.
+* **Cost Accounting:** The public catalog listed zero prompt/completion prices for the four candidate IDs on 2026-10-05. Record actual provider usage/billing and routing; do not assume every request will cost exactly $0.00.
 
 ### 2.2 Strict Ethical & Compliance Policy
 > [!IMPORTANT]
@@ -91,21 +91,21 @@ Instead of evading limits, the platform achieves full evaluation through smart e
 
 ---
 
-## 3. Verified Four-Model Selection
+## 3. Candidate Four-Model Selection
 
-To provide a rigorous, cross-family comparison, the platform evaluates **FOUR fixed models** spanning different architectures, parameter scales, and creators. All four are verified as available on OpenRouter's free tier.
+The proposed comparison targets **four named candidate models** spanning different creators and focuses. On 2026-10-05 the official public catalog returned 404 for the former Nemotron ID; the replacement and the other three IDs were listed at zero prompt/completion prices. Actual generation endpoint availability, routing, and billing remain untested.
 
 | # | Model Name | Creator / Family | Exact OpenRouter Model ID | Context Window | Architecture / Focus |
 |---|---|---|---|---|---|
-| 1 | **NVIDIA Nemotron 3 Ultra** | NVIDIA | `nvidia/nemotron-3-ultra:free` | 1,000,000 | Ultra-large scale general reasoning & alignment |
-| 2 | **Google Gemma 4 31B** | Google | `google/gemma-4-31b-it:free` | 128,000 | Dense open-weight instruction-tuned model |
-| 3 | **Qwen 3.8 27B** | Alibaba Qwen | `qwen/qwen3.8-27b:free` | 32,768 | Multilingual, math & logical reasoning |
-| 4 | **Cohere North Mini Code** | Cohere | `cohere/north-mini-code:free` | 32,768 | Code-specialized reasoning & generation |
+| 1 | **NVIDIA Nemotron 3 Ultra** | NVIDIA | `nvidia/nemotron-3-ultra-550b-a55b:free` | 1,000,000 | Ultra-large scale general reasoning & alignment |
+| 2 | **Google Gemma 4 31B** | Google | `google/gemma-4-31b-it:free` | 262,144 | Dense open-weight instruction-tuned model |
+| 3 | **Qwen 3.8 27B** | Alibaba Qwen | `qwen/qwen3.8-27b:free` | 262,144 | Multilingual, math & logical reasoning |
+| 4 | **Cohere North Mini Code** | Cohere | `cohere/north-mini-code:free` | 256,000 | Code-specialized reasoning & generation |
 
 ### 3.1 Model Selection Rationale
 - **Cross-Family Diversity:** Covers NVIDIA (Nemotron), Google (Gemma), Alibaba (Qwen), and Cohere (Command/North), avoiding single-vendor bias.
 - **Task Specialization:** Includes both general-purpose instruction models (Gemma, Qwen, Nemotron) and a dedicated coding model (Cohere North Mini Code) to reveal capability trade-offs.
-- **Fixed Model Identity Rule:** We strictly **DO NOT use `openrouter/free`**. The generic free router dynamically routes prompts to arbitrary models, destroying experimental control and reproducibility. Fixed IDs guarantee identical model weights across all evaluation runs.
+- **Fixed Model Identity Rule:** Do not use `openrouter/free` for controlled comparisons: its dynamic model selection changes what is evaluated. Named IDs improve traceability but do **not** guarantee identical hosted weights or routing across runs; log requested/returned IDs, provider, and timestamps.
 
 ### 3.2 Dynamic Fallback & Replacement Policy
 If any model endpoint is temporarily unavailable or deprecated by OpenRouter:
@@ -197,7 +197,7 @@ The benchmark comprises **SIX distinct capability categories** derived from the 
 
 ## 6. Request Budget & Free-Tier Optimization
 
-To guarantee zero cost and avoid rate-limiting, the initial benchmark is deliberately sized to operate within OpenRouter's free-tier quota (50 requests/day for new accounts; 20 RPM).
+The initial benchmark is sized against the plan's assumed free-tier quota (50 requests/day for new accounts; 20 RPM). Recheck current account limits and actual billing before execution; sizing alone cannot guarantee zero cost or prevent rate limiting.
 
 ### 6.1 Benchmark Sizing Strategy
 
@@ -223,7 +223,7 @@ Response caching is the cornerstone of the zero-cost architecture. It prevents d
 flowchart TD
     Req["Incoming Evaluation Request"] --> Hash["Compute Deterministic Cache Key (SHA-256)"]
     Hash --> Check{"Exists in Cache Store?"}
-    Check -->|Yes| Hit["Load Cached Response (0ms, $0.00, 0 API Calls)"]
+    Check -->|Yes| Hit["Replay historical response (0 new API calls; not a fresh sample)"]
     Check -->|No| Miss["Call OpenRouter Free Endpoint"]
     Miss --> Store["Persist to Cache Store (Disk/JSONL)"]
     Store --> Ret["Return Fresh Response"]
@@ -256,7 +256,7 @@ def generate_cache_key(model_id: str, prompt: str, system_prompt: str,
 
 ### 7.2 Storage & Invalidation Rules
 - **Storage Location:** `runs/cache/response_cache.jsonl` (and mirrored in experiment run folders).
-- **Cache Validity:** Cache entries are immutable and perpetual for deterministic settings ($\text{temperature} = 0.0$).
+- **Cache Validity:** Preserve entries as historical responses tied to exact recorded request settings and model/provider metadata. Temperature 0 is not deterministic; a cache hit is replay, not a fresh independent sample. Revalidate endpoint/routing before new requests and bypass cache when collecting repetitions.
 - **Cache Bypass Flag:** A CLI flag `--no-cache` or `--refresh-cache` allows explicit re-evaluation if model endpoints update.
 
 ---
@@ -279,7 +279,7 @@ The platform captures both output quality and operational system performance.
 2. **Token Throughput & Usage:** Prompt tokens, completion tokens, and total tokens per request.
 3. **Request Success Rate:** Ratio of successful HTTP 200 responses to total attempted requests.
 4. **Error & Timeout Rate:** Explicit breakdown of HTTP 429 (rate limit), 500/503 (provider outage), and timeout occurrences.
-5. **Cost:** Displayed as **$0.00** for all evaluated free models, with simulated pricing models available for future comparisons.
+5. **Cost:** Report actual recorded or provider-reported cost when available; otherwise mark it unknown. Catalog zero prompt/completion prices do not prove exact zero-dollar expense for an unverified route.
 
 ---
 
@@ -298,7 +298,7 @@ The platform captures both output quality and operational system performance.
 |     - Single-reviewer mode supported; second reviewer is strictly OPTIONAL.                        |
 +----------------------------------------------------------------------------------------------------+
 |  C. ZERO-COST LLM-AS-A-JUDGE (Tertiary - Optional Extension)                                       |
-|     - Evaluates open-ended answers using one of the verified free models (e.g., Nemotron 3 Ultra).  |
+|     - Could evaluate open-ended answers using an available free model (e.g., Nemotron 3 Ultra).      |
 |     - Subject to prompt de-biasing; NEVER a mandatory blocker.                                     |
 +----------------------------------------------------------------------------------------------------+
 ```
@@ -310,7 +310,7 @@ Every task category has a deterministic rule-based evaluator. Automated scoring 
 Human evaluation is used to inspect edge cases and validate whether automated scorers are overly strict or lenient. **It is never mandatory for pipeline completion.**
 
 ### 9.3 Zero-Cost LLM-as-a-Judge (Optional)
-For generative tasks like Summarization, one of our designated free models (such as `nvidia/nemotron-3-ultra:free`) can serve as an automated judge using a structured grading prompt. 
+For generative tasks like Summarization, an available candidate free model (such as `nvidia/nemotron-3-ultra-550b-a55b:free`, if live access is confirmed) could serve as an automated judge using a structured grading prompt.
 - **Zero-Cost Compliance:** Uses the same free OpenRouter endpoint.
 - **Position Swap De-Biasing:** When comparing two responses, the judge evaluates both $(A, B)$ and $(B, A)$ orderings to eliminate positional bias.
 - **Non-Blocking Status:** If free judge calls exceed rate limits, the system falls back seamlessly to rule-based metrics without failing.
@@ -405,10 +405,10 @@ The evaluation execution follows a strict 14-step pipeline:
 ```
  1. Load benchmark dataset (JSONL) & validate schema
  2. Load evaluation configuration (models, temperature, max_tokens)
- 3. Load verified 4-model list (Nemotron, Gemma, Qwen, Cohere)
+ 3. Load chosen model IDs after confirming live availability (Nemotron, Gemma, Qwen, Cohere are candidates)
  4. Generate deterministic cache key for each (prompt, model, config) tuple
  5. Query local response cache
- 6. If cache hit: retrieve saved response (0ms, 0 cost)
+  6. If cache hit: replay saved response (no new request; not an independent sample)
  7. If cache miss: dispatch request to OpenRouter free endpoint with rate limiter
  8. Store raw response and metadata to disk immediately (append-only JSONL)
  9. Record latency, token usage, and HTTP status codes
@@ -449,6 +449,8 @@ Every run under `runs/<experiment_id>/` contains:
 4. `summary.json`: Aggregated metrics by model and category.
 5. `export/results.csv`: Flattened tabular export for external analysis.
 
+Illustrative configuration only; no such run is reported here:
+
 ```json
 {
   "run_id": "exp_2026_10_05_001",
@@ -456,7 +458,7 @@ Every run under `runs/<experiment_id>/` contains:
   "dataset_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "timestamp": "2026-10-05T12:00:00Z",
   "models": [
-    "nvidia/nemotron-3-ultra:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-31b-it:free",
     "qwen/qwen3.8-27b:free",
     "cohere/north-mini-code:free"
@@ -497,14 +499,14 @@ flowchart TD
 
 The platform includes a lightweight, clean **Streamlit Dashboard** (`app.py`) focused strictly on informative comparison without unnecessary visual clutter.
 
-### 16.1 Master Comparison Table View
+### 16.1 Master Comparison Table View (Illustrative Values Only; No Runs Completed)
 
 | Model Name | Overall Accuracy | Reasoning Acc | Math Acc | Coding Acc | Knowledge Acc | Instruction Comp | Avg Latency | Error Rate | Cost |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **NVIDIA Nemotron 3 Ultra** | 85.0% | 90.0% | 80.0% | 75.0% | 95.0% | 90.0% | 1,420 ms | 0.0% | $0.00 |
-| **Google Gemma 4 31B** | 82.5% | 85.0% | 80.0% | 80.0% | 90.0% | 85.0% | 1,150 ms | 0.0% | $0.00 |
-| **Qwen 3.8 27B** | 80.0% | 85.0% | 85.0% | 70.0% | 85.0% | 80.0% | 980 ms | 0.0% | $0.00 |
-| **Cohere North Mini Code** | 77.5% | 70.0% | 75.0% | 95.0% | 75.0% | 85.0% | 890 ms | 0.0% | $0.00 |
+| **NVIDIA Nemotron 3 Ultra** | 85.0% | 90.0% | 80.0% | 75.0% | 95.0% | 90.0% | 1,420 ms | 0.0% | unknown |
+| **Google Gemma 4 31B** | 82.5% | 85.0% | 80.0% | 80.0% | 90.0% | 85.0% | 1,150 ms | 0.0% | unknown |
+| **Qwen 3.8 27B** | 80.0% | 85.0% | 85.0% | 70.0% | 85.0% | 80.0% | 980 ms | 0.0% | unknown |
+| **Cohere North Mini Code** | 77.5% | 70.0% | 75.0% | 95.0% | 75.0% | 85.0% | 890 ms | 0.0% | unknown |
 
 ### 16.2 Dashboard Views & Features
 1. **Overview Leaderboard:** Aggregated rankings, radar chart across 6 capability dimensions, and latency-vs-accuracy scatter plot.
@@ -521,7 +523,7 @@ The platform includes a lightweight, clean **Streamlit Dashboard** (`app.py`) fo
 ### 17.1 Credential Management
 - All API authentication is read exclusively from environment variables:
   ```env
-  OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  OPENROUTER_API_KEY=your-openrouter-key
   ```
 - A template file `.env.example` is provided in the repository.
 - `.gitignore` strictly excludes `.env`, `*.key`, `runs/`, and local database files.
@@ -684,7 +686,7 @@ evaluating-llms/
 | **OpenRouter free endpoint deprecated** | Model call fails | Low | Documented fallback policy; dynamic selection of closest available free model. |
 | **Network disconnection during run** | Partial results | Medium | Immediate per-response JSONL append; resume skips completed questions. |
 | **Overly strict automated scoring** | Under-scored model | Medium | Normalization algorithms (numeric tolerance, regex letter extraction) + optional human review. |
-| **Accidental API cost / credit spend** | Unintended expense | Zero | Hard-coded constraint to only invoke verified free `:free` model IDs; zero credit purchase. |
+| **Accidental API cost / credit spend** | Unintended expense | Unknown until live checks | Require confirmed `:free` routes, check billing/limits before requests, and stop if charges appear. |
 | **Accidental duplicate API requests** | Wasted quota | Medium | Mandatory cache check preceding every network dispatch. |
 
 ---
@@ -721,10 +723,10 @@ The modular architecture naturally supports future expansion post-MVP:
 
 The initial version of the project is complete and ready for demonstration when:
 
-- [ ] **Four fixed free OpenRouter models** (`nvidia/nemotron-3-ultra:free`, `google/gemma-4-31b-it:free`, `qwen/qwen3.8-27b:free`, `cohere/north-mini-code:free`) are evaluated.
+- [ ] **Four selected and live-checked OpenRouter models** (candidates: `nvidia/nemotron-3-ultra-550b-a55b:free`, `google/gemma-4-31b-it:free`, `qwen/qwen3.8-27b:free`, `cohere/north-mini-code:free`) are evaluated.
 - [ ] **Exact model IDs** are documented and used in the code.
 - [ ] **Identical benchmark inputs** (prompts, instructions, settings) are provided to all four models.
-- [ ] The project requires **$0.00 API spend** and operates entirely within legitimate free-tier limits.
+- [ ] Actual API billing and routing are checked; any run stays within approved spend and legitimate free-tier limits.
 - [ ] **Zero rate-limit bypass** techniques are used; rate limits are handled via pause/resume.
 - [ ] **Response caching** is implemented and prevents duplicate API calls.
 - [ ] **Raw responses**, latency, token metrics, and evaluation scores are persisted to disk.

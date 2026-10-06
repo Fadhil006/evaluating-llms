@@ -1,0 +1,12 @@
+[project]
+name = "evaluating-llms"
+version = "0.1.0"
+description = "Offline foundations for an LLM evaluation experiment"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+ui = ["streamlit"]
+
+[tool.setuptools]
+packages = ["evaluation"]
