@@ -351,7 +351,7 @@ class DashboardTests(unittest.TestCase):
             shutil.copyfile(ROOT / "app.py", app)
             empty = AppTest.from_file(str(app)).run()
             self.assertFalse(empty.exception)
-            self.assertEqual(empty.title[0].value, "Evidence, not a leaderboard.")
+            self.assertTrue(any("See why an answer" in note.value for note in empty.markdown))
             self.assertEqual([heading.value for heading in empty.header[:2]],
                               ["Compare two models.", "Read the record."])
             self.assertTrue(any("No saved runs found" in message.value for message in empty.info))

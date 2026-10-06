@@ -394,18 +394,22 @@ def walkthrough_html(row):
     )
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
     <style>
-      *{{box-sizing:border-box}} body{{margin:0;font:16px/1.5 system-ui,sans-serif;color:#183532;background:#edf5f1}}
-      .shell{{border:1px solid #c2d8cf;border-radius:14px;overflow:hidden;background:#fff}}
-      .toolbar{{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid #c2d8cf;background:#f7faf8}}
-      .toolbar strong{{margin-right:auto}} button{{border:1px solid #146c64;border-radius:8px;background:#146c64;color:white;font:inherit;font-weight:650;padding:7px 12px;cursor:pointer}}
-      button.secondary{{background:white;color:#146c64}} button:focus-visible{{outline:3px solid #b75d37;outline-offset:2px}}
-      .counter{{color:#45635d;font-size:14px;min-width:75px;text-align:right}}
+      *{{box-sizing:border-box}} body{{margin:0;font:16px/1.5 system-ui,sans-serif;color:#182230;background:#f6f7fb}}
+      .shell{{border:1px solid #dce0ed;border-radius:14px;overflow:hidden;background:#fff}}
+      .toolbar{{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid #dce0ed;background:#f9f9fd}}
+      .toolbar strong{{margin-right:auto}} button{{border:1px solid #5048e5;border-radius:8px;background:#5048e5;color:white;font:inherit;font-weight:650;padding:7px 12px;cursor:pointer}}
+      button.secondary{{background:white;color:#5048e5}} button:focus-visible{{outline:3px solid #d79648;outline-offset:2px}}
+      .counter{{color:#526071;font-size:14px;min-width:75px;text-align:right}}
       .viewport{{height:370px;overflow-y:auto;scroll-behavior:smooth;padding:18px 16px 28px}}
-      .step{{display:grid;grid-template-columns:48px 1fr;gap:12px;max-width:820px;margin:0 auto 16px;padding:16px;border:1px solid #c8d9d2;border-radius:12px;background:#f9fcfa;opacity:.66;transition:opacity .35s,border-color .35s,box-shadow .35s}}
-      .step.active{{opacity:1;border-color:#146c64;box-shadow:0 8px 24px #146c6420}}
-      .number{{display:grid;place-items:center;width:40px;height:40px;border-radius:50%;background:#dceee7;color:#146c64;font-weight:750}}
-      h3{{margin:0 0 3px;font-size:18px}} p{{margin:0 0 10px;color:#45635d;font-size:14px}}
-      .value{{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 12px;border-left:3px solid #b75d37;background:#fff;font-weight:550}}
+      .step{{display:grid;grid-template-columns:48px 1fr;gap:12px;max-width:820px;margin:0 auto 16px;padding:16px;border:1px solid #dce0ed;border-radius:12px;background:#fafaff;opacity:.66;transition:opacity .35s,border-color .35s,box-shadow .35s}}
+      .step.active{{opacity:1;border-color:#5048e5;box-shadow:0 8px 24px #5048e520}}
+      .number{{display:grid;place-items:center;width:40px;height:40px;border-radius:50%;background:#eeecff;color:#5048e5;font-weight:750}}
+      h3{{margin:0 0 3px;font-size:18px}} p{{margin:0 0 10px;color:#526071;font-size:14px}}
+      .value{{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 12px;border-left:3px solid #d79648;background:#fff;font-weight:550}}
+      @media(max-width:500px){{.toolbar{{display:grid;grid-template-columns:auto auto 1fr;gap:8px}}
+        .toolbar strong{{grid-column:1/-1}}.counter{{justify-self:end}}
+        .viewport{{scrollbar-width:none}}.viewport::-webkit-scrollbar{{display:none}}
+        .step{{grid-template-columns:34px 1fr;gap:8px;padding:12px}}.number{{width:32px;height:32px}}}}
       @media(prefers-reduced-motion:reduce){{.viewport{{scroll-behavior:auto}}.step{{transition:none}}}}
     </style></head><body><div class="shell">
       <div class="toolbar"><strong>Follow one saved answer</strong><button id="toggle" type="button">Pause</button>
@@ -434,98 +438,112 @@ def walkthrough_html(row):
 def main():
     st.set_page_config(page_title="Evaluation Studio / local evidence", page_icon="◈", layout="wide")
     st.markdown("""<style>
-      :root {--ink: #183532; --muted: #45635d; --line: #c8d9d2; --accent: #146c64; --warm: #b75d37;}
-      .stApp {
-        background: radial-gradient(ellipse at 94% 0%, #e4f1ec 0, transparent 35%), #f7faf8;
-        color: var(--ink);
-        font-family: 'Avenir Next', 'Segoe UI', sans-serif;
-      }
-      .block-container {max-width: 1200px; padding: 3rem clamp(1.25rem, 4vw, 4rem) 6rem;}
-      h1, h2, h3 {font-family: 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
-        letter-spacing: -.04em; color: var(--ink);}
-      h1 {font-size: clamp(2.75rem, 5vw, 4.65rem) !important; line-height: 1.06 !important;
-        max-width: 850px; margin: .25rem 0 .5rem !important;}
-      h2 {font-size: clamp(1.9rem, 3vw, 2.75rem) !important; line-height: 1.12;}
-      h3 {font-size: 1.65rem !important;}
-      p, label {line-height: 1.55;}
-      [data-testid="stCaptionContainer"] {color: var(--muted); letter-spacing: .035em;}
-      .studio-eyebrow, .studio-index {font: 700 .74rem/1.5 'Avenir Next','Segoe UI',sans-serif;
-        letter-spacing: .19em; color: #315e4f; text-transform: uppercase;}
-      .studio-eyebrow::before {content: ''; display: inline-block; width: 22px; height: 2px;
-        vertical-align: middle; margin-right: 12px; background: var(--warm);}
-      .studio-note {border-left: 2px solid var(--warm); margin: 1.1rem 0 1.5rem;
-         padding: .4rem 0 .4rem 1rem; color: var(--muted); max-width: 640px;
-         font-size: 1.04rem; line-height: 1.6;}
-      .studio-flow {display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: .55rem; margin: 1.5rem 0 1rem; padding: 0; list-style: none;}
-      .studio-flow li {border-top: 3px solid var(--accent); padding: .75rem .65rem;
-        background: #eaf3ee; border-radius: 0 0 .4rem .4rem; font-size: .9rem; line-height: 1.35;}
-      .studio-flow b {display: block; color: #885036; font-size: .7rem; letter-spacing: .12em; margin-bottom: .3rem;}
-      div.st-key-workbench {background: #edf5f1; border: 1px solid #c2d8cf;
-        border-radius: 1rem; padding: clamp(1.15rem, 3vw, 2rem);
-        box-shadow: 0 18px 40px rgba(22,75,70,.07);}
-      div.st-key-workbench [data-testid="stForm"] {border: 0; background: transparent; padding: .4rem 0 0;}
-      div.st-key-workbench [data-testid="stCaptionContainer"] {font-size: .77rem; font-weight: 650;}
-      [data-testid="stSelectbox"] [data-baseweb="select"] > div,
-      [data-testid="stTextInput"] input,
-      [data-testid="stNumberInput"] input {
-        background: #fff !important; border-color: #adc9bf !important;
-        border-radius: .7rem !important; color: var(--ink) !important;
-      }
-      [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
-      [data-testid="stTextInput"] input:hover,
-      [data-testid="stNumberInput"] input:hover {border-color: var(--accent) !important;}
-      [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within,
-      [data-testid="stTextInput"] input:focus,
-      [data-testid="stNumberInput"] input:focus {
-        box-shadow: 0 0 0 3px rgba(20,108,100,.18) !important;
-        border-color: var(--accent) !important;
-      }
-      [data-baseweb="popover"] [role="listbox"] {
-        background: #fff; border: 1px solid #c3d8d0;
-        border-radius: .75rem; box-shadow: 0 14px 32px rgba(18,62,57,.16);
-      }
-      [data-baseweb="popover"] [role="option"] {color: var(--ink);}
-      [data-baseweb="popover"] [role="option"]:hover,
-      [data-baseweb="popover"] [role="option"][aria-selected="true"] {
-        background: #e3f2ed; color: #0d504a;
-      }
-      [data-testid="stAlert"] {border-radius: .6rem; border-width: 1px;}
-      [data-testid="stMetric"] {background: #fff; border: 1px solid var(--line);
-        border-top: 3px solid var(--accent); padding: 1.15rem; border-radius: .6rem;
-        min-height: 126px; box-shadow: 0 12px 24px rgba(18,58,45,.055);}
-      [data-testid="stMetricValue"] {font-family: Georgia,serif; color: var(--ink); font-size: 2rem;}
-      [data-testid="stMetricLabel"] {color: #365b54;}
-      [data-testid="stDataFrame"] {border: 1px solid var(--line); border-radius: .6rem;
-        box-shadow: 0 8px 26px rgba(22,53,47,.045);}
-      [data-testid="stTabs"] [role="tablist"] {border-bottom: 1px solid var(--line); gap: .3rem;}
-      [data-testid="stTabs"] button[role="tab"] {font-weight: 650; color: #415a52;}
-      [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {color: var(--accent);}
-      div[data-testid="stFormSubmitButton"] button, div[data-testid="stDownloadButton"] button {
-        background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: .65rem;
-        font-weight: 700; padding-inline: 1.4rem; min-height: 2.9rem;
-      }
-      div[data-testid="stFormSubmitButton"] button:hover, div[data-testid="stDownloadButton"] button:hover {
-        background: #0d5751; color: #fff; border-color: #0d5751; transform: translateY(-1px);
-        box-shadow: 0 8px 18px rgba(20,108,100,.17);
-      }
-      button:focus-visible, [role="tab"]:focus-visible {outline: 3px solid #b75d37 !important; outline-offset: 2px;}
-      @media(max-width: 700px) {
-        .block-container {padding: 1.5rem 1rem 4rem;}
-        .studio-flow {grid-template-columns: repeat(2, minmax(0, 1fr));}
-        [data-testid="stTabs"] [role="tablist"] {overflow-x: auto;}
-        [data-testid="stMetric"] {min-height: 0;}
-        [data-testid="stCodeBlock"] pre {white-space: pre-wrap; overflow-wrap: anywhere;}
-      }
-      @media(prefers-reduced-motion: reduce) {
-        div[data-testid="stFormSubmitButton"] button:hover, div[data-testid="stDownloadButton"] button:hover {transform: none;}
-      }
+      :root {--ink:#182230;--muted:#526071;--line:#dde3ed;--accent:#5048e5;--accent-2:#7865ef;--paper:#f6f7fb;--warm:#d79648;}
+      .stApp {background:var(--paper);color:var(--ink);font-family:Inter,'Segoe UI',system-ui,sans-serif;}
+      .block-container {max-width:1180px;padding:1.7rem clamp(1rem,4vw,3rem) 5rem;}
+      h1,h2,h3 {font-family:Inter,'Segoe UI',system-ui,sans-serif;letter-spacing:-.035em;color:var(--ink);}
+      h2 {font-size:clamp(1.6rem,2.5vw,2.2rem)!important;} h3 {font-size:1.35rem!important;}
+      p,label {line-height:1.55;} [data-testid="stCaptionContainer"] {color:var(--muted);}
+      .hero {position:relative;overflow:hidden;border-radius:24px;padding:clamp(1.35rem,3vw,2.3rem);color:#fff;
+        background:radial-gradient(circle at 78% 16%,#464394 0,transparent 30%),linear-gradient(135deg,#111a2c 0%,#202949 70%,#342f67 100%);
+        box-shadow:0 24px 55px rgba(25,34,64,.18);}
+      .hero:after {content:'';position:absolute;inset:0;pointer-events:none;opacity:.2;
+        background-image:radial-gradient(#fff 1px,transparent 1px);background-size:20px 20px;
+        mask-image:linear-gradient(90deg,transparent 20%,#000 100%);}
+      .hero-top,.hero-grid,.hero-bottom {position:relative;z-index:1;}
+      .hero-top {display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-bottom:1rem;}
+      .brand {font-weight:850;letter-spacing:.13em;font-size:.84rem;}.brand-mark {color:#b8acff;font-size:1.2rem;margin-right:.4rem;}
+      .hero-status {border:1px solid #ffffff55;border-radius:999px;padding:.35rem .75rem;color:#e4e7ff;font-size:.75rem;font-weight:700;letter-spacing:.08em;}
+      .hero-status:before {content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:#8ff0bc;margin-right:.55rem;box-shadow:0 0 0 4px #8ff0bc33;}
+      .hero-grid {display:grid;grid-template-columns:minmax(0,1.3fr) minmax(250px,.7fr);gap:1.7rem;align-items:center;}
+      .hero-kicker {font-size:.76rem;letter-spacing:.17em;font-weight:800;color:#c3bcff;text-transform:uppercase;margin:0 0 .7rem;}
+      .hero h1 {max-width:740px;font-size:clamp(2.4rem,4.5vw,4.1rem);line-height:1.04;letter-spacing:-.06em;color:#fff;margin:0 0 .8rem;}
+      .hero h1 em {font-style:normal;color:#b8acff;}.hero-copy {max-width:600px;font-size:1.05rem;line-height:1.65;color:#e0e4f1;margin:0;}
+      .hero-preview {background:#ffffffed;color:#1b2840;border:1px solid #ffffff88;border-radius:18px;padding:1rem;transform:rotate(2deg);box-shadow:0 22px 50px #070d2566;}
+      .preview-top {display:flex;justify-content:space-between;align-items:center;color:#59637a;font-size:.67rem;font-weight:800;letter-spacing:.1em;}
+      .preview-dot {width:8px;height:8px;border-radius:50%;background:#5abf91;display:inline-block;margin-right:5px;}
+      .preview-question {font-weight:750;font-size:1.02rem;line-height:1.35;margin:1.1rem 0;}
+      .preview-answer {display:flex;justify-content:space-between;background:#f2f1ff;border:1px solid #ddd8ff;border-radius:10px;padding:.7rem .8rem;font-size:.85rem;}
+      .preview-answer strong {color:#3e35b4;}.preview-result {margin-top:.6rem;background:#e8f8ee;border-radius:10px;padding:.7rem .8rem;color:#176444;font-size:.83rem;font-weight:750;}
+      .hero-bottom {display:flex;gap:.55rem;flex-wrap:wrap;margin-top:1rem;}.hero-bottom span {border:1px solid #ffffff35;border-radius:999px;padding:.4rem .7rem;color:#e2e7f6;font-size:.76rem;font-weight:650;}
+      .section-kicker,.studio-eyebrow {font-size:.75rem;letter-spacing:.16em;text-transform:uppercase;color:#5b53bf;font-weight:850;margin:1.55rem 0 .15rem;}
+      .section-copy {font-size:1rem;color:var(--muted);margin:.25rem 0 1rem;}
+      .choice-title {font-size:1.32rem;font-weight:820;letter-spacing:-.03em;line-height:1.2;margin:.25rem 0 .5rem;}
+      .choice-label {font-size:.7rem;font-weight:850;letter-spacing:.14em;color:#5148ce;text-transform:uppercase;}
+      div.st-key-demo-card,div.st-key-live-card {background:#fff;border:1px solid var(--line);border-radius:18px;padding:1.4rem;
+        box-shadow:0 10px 28px rgba(28,39,74,.055);min-height:246px;}
+      div.st-key-demo-card {background:linear-gradient(145deg,#fff 60%,#f2efff);border-color:#cac3ff;}
+      div.st-key-demo-card [data-testid="stButton"] button {background:#5048e5;color:#fff;border:1px solid #5048e5;border-radius:10px;
+        min-height:46px;padding:.55rem 1.15rem;font-weight:750;box-shadow:0 8px 18px #5048e533;}
+      div.st-key-demo-card [data-testid="stButton"] button:hover {background:#3932bb;border-color:#3932bb;color:#fff;transform:translateY(-2px);}
+      div.st-key-live-card [data-testid="stExpander"] {border:1px solid #d9ddea;border-radius:11px;background:#fafbff;}
+      div.st-key-workbench {background:#fff;border:1px solid var(--line);border-radius:16px;padding:clamp(1rem,2vw,1.5rem);}
+      div.st-key-workbench [data-testid="stForm"] {border:0;background:transparent;padding:.25rem 0 0;}
+      .studio-flow {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.5rem;list-style:none;padding:0;margin:1.25rem 0 1.75rem;}
+      .studio-flow li {background:#fff;border:1px solid var(--line);border-radius:12px;padding:.9rem .75rem;font-size:.82rem;line-height:1.35;
+        box-shadow:0 5px 14px #1e2a4408;}
+      .studio-flow b {display:block;color:#5048e5;font-size:.66rem;letter-spacing:.12em;margin-bottom:.45rem;}
+      .studio-flow li:not(:last-child):after {content:'→';float:right;color:#aaa4e7;font-size:1.05rem;}
+      [data-testid="stSelectbox"] [data-baseweb="select"]>div,[data-testid="stTextInput"] input,[data-testid="stNumberInput"] input {
+        background:#fff!important;border-color:#ccd3e0!important;border-radius:10px!important;color:var(--ink)!important;}
+      [data-testid="stSelectbox"] [data-baseweb="select"]>div:focus-within,[data-testid="stTextInput"] input:focus,
+      [data-testid="stNumberInput"] input:focus {border-color:#5048e5!important;box-shadow:0 0 0 3px #5048e522!important;}
+      [data-testid="stAlert"] {border-radius:12px;border-width:1px;}
+      [data-testid="stMetric"] {background:#fff;border:1px solid var(--line);padding:1rem;border-radius:12px;min-height:112px;box-shadow:0 6px 16px #1e2a4408;}
+      [data-testid="stMetricValue"] {font-weight:800;color:var(--ink);font-size:1.8rem;}
+      [data-testid="stMetricLabel"] {color:#516073;}
+      [data-testid="stDataFrame"] {border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+      [data-testid="stTabs"] [role="tablist"] {gap:.4rem;border-bottom:1px solid var(--line);overflow-x:auto;}
+      [data-testid="stTabs"] button[role="tab"] {font-weight:700;color:#5c6576;border-radius:9px 9px 0 0;padding-inline:1rem;white-space:nowrap;}
+      [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {color:#5048e5;background:#eeecff;}
+      div[data-testid="stFormSubmitButton"] button,div[data-testid="stDownloadButton"] button {background:#5048e5;color:#fff;border:1px solid #5048e5;
+        border-radius:10px;font-weight:750;min-height:44px;padding-inline:1.2rem;}
+      div[data-testid="stFormSubmitButton"] button:hover,div[data-testid="stDownloadButton"] button:hover {background:#3932bb;color:#fff;border-color:#3932bb;}
+      button:focus-visible,[role="tab"]:focus-visible {outline:3px solid #d79648!important;outline-offset:2px;}
+      @media(max-width:760px) {.block-container{padding:1rem 1rem 4rem}.hero-grid{grid-template-columns:1fr}.hero-preview{display:none}
+        .hero-top{padding-bottom:1.25rem}.hero h1{font-size:clamp(2.2rem,9vw,3.3rem)}.studio-flow{grid-template-columns:repeat(2,minmax(0,1fr))}
+        div.st-key-demo-card,div.st-key-live-card{min-height:0}[data-testid="stCodeBlock"] pre{white-space:pre-wrap;overflow-wrap:anywhere}}
+      @media(prefers-reduced-motion:reduce) {*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
     </style>""", unsafe_allow_html=True)
 
-    st.markdown('<div class="studio-eyebrow">Evaluation studio / local-first research</div>', unsafe_allow_html=True)
-    st.title("Evidence, not a leaderboard.")
-    st.markdown('<div class="studio-note">Start with a saved example, then inspect real runs with care. '
-                 'Viewing results never sends requests.</div>', unsafe_allow_html=True)
+    st.markdown('''<section class="hero" aria-label="Evaluation Studio introduction">
+      <div class="hero-top"><div class="brand"><span class="brand-mark">◈</span> EVAL / STUDIO</div>
+        <div class="hero-status">LOCAL EVIDENCE</div></div>
+      <div class="hero-grid"><div><p class="hero-kicker">Understand the result, step by step</p>
+        <h1>See why an answer <em>earned its score.</em></h1>
+        <p class="hero-copy">Explore a model's question, answer, scoring rule and decision in one place.
+          Start with a safe example, then inspect saved comparisons when you're ready.</p></div>
+        <div class="hero-preview" aria-hidden="true"><div class="preview-top"><span><i class="preview-dot"></i> SAVED EXAMPLE</span><span>01 / 05</span></div>
+          <div class="preview-question">Who is younger: Eva or Dan?</div>
+          <div class="preview-answer"><span>Model answer</span><strong>B · Dan</strong></div>
+          <div class="preview-result">✓ Matches the reference answer</div></div></div>
+    </section>''', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-kicker">01 / Start here</div>', unsafe_allow_html=True)
+    st.markdown('## Pick your starting point')
+    demo_col, live_col = st.columns(2, gap="medium")
+    with demo_col:
+        with st.container(border=True, key="demo-card"):
+            st.markdown('<div class="choice-label">Recommended · no setup</div><div class="choice-title">Explore the offline demo</div>', unsafe_allow_html=True)
+            st.write("Watch four example answers get scored. Nothing is sent to a provider.")
+            st.caption("Synthetic example · not measured model performance")
+            if st.button("Try offline demo", help="Create a synthetic four-answer development run. No key or provider request is used."):
+                try:
+                    folder = create_demo_run()
+                except (OSError, ValueError):
+                    st.error("Could not create the offline demo. Check the local runs folder and try again.")
+                else:
+                    st.session_state["selected_run"] = folder.name
+                    st.session_state["walkthrough_follow"] = True
+                    st.success("Synthetic demo saved. Follow the walkthrough below.")
+    with live_col:
+        with st.container(border=True, key="live-card"):
+            st.markdown('<div class="choice-label">Optional · uses a provider</div><div class="choice-title">Compare two live models</div>', unsafe_allow_html=True)
+            st.write("Choose a dataset and two models. You'll review the attempt cap and confirm before any requests start.")
+            with st.expander("Compare live models (optional)", expanded=False):
+                control_panel()
+    st.caption("START HERE  /  1. Explore the offline demo  →  2. Opt in to a live comparison if ready  →  3. Read saved answers below")
+    st.markdown('<div class="section-kicker">The method at a glance</div>', unsafe_allow_html=True)
     st.markdown('''<ol class="studio-flow" aria-label="Evaluation steps">
       <li><b>01 / INPUT</b>Project-authored dataset prompt</li>
       <li><b>02 / REQUEST</b>Chosen model and route</li>
@@ -533,29 +551,16 @@ def main():
       <li><b>04 / CHECK</b>Declared scorer, rules and checks</li>
       <li><b>05 / READOUT</b>Scored, review or failed; compare matched items</li>
     </ol>''', unsafe_allow_html=True)
-    st.caption("METHOD / This is a project-authored dataset, not a benchmark taken from the cited papers. Objective scores use declared checks; proxy checks need human review.")
-    st.markdown("**Reading that shaped this workflow:** [Chang ’24](https://doi.org/10.1145/3641289) · "
-                "[Cao ’25](https://arxiv.org/abs/2504.18838) · "
-                "[Ni ’25](https://arxiv.org/abs/2508.15361) · "
-                "[Mohammadi ’25](https://arxiv.org/abs/2507.21504)  —  context, not the source of this dataset or its results.")
-    with st.expander("Research behind the method · four short references"):
-        st.markdown("**Capability categories** — [Chang et al. (2024), survey of LLM evaluation](https://doi.org/10.1145/3641289) informs the breadth of questions, not these answers or scores.  \n"
+    with st.expander("Research references and method notes"):
+        st.caption("METHOD / This is a project-authored dataset, not a benchmark taken from the cited papers. Objective scores use declared checks; proxy checks need human review.")
+        st.markdown("**Reading that shaped this workflow:** [Chang ’24](https://doi.org/10.1145/3641289) · "
+                    "[Cao ’25](https://arxiv.org/abs/2504.18838) · "
+                    "[Ni ’25](https://arxiv.org/abs/2508.15361) · "
+                    "[Mohammadi ’25](https://arxiv.org/abs/2507.21504)  —  context, not the source of this dataset or its results.")
+        st.markdown("**Capability categories** — [Chang et al. (2024)](https://doi.org/10.1145/3641289) informs the breadth of questions, not these answers or scores.  \n"
                     "**Generalization and paired robustness** — [Cao et al. (2025)](https://arxiv.org/abs/2504.18838) discusses evaluation beyond fixed benchmarks; this app examines only saved original/paraphrase pairs.  \n"
-                    "**Benchmark limits and trustworthy reporting** — [Ni et al. (2025)](https://arxiv.org/abs/2508.15361) surveys benchmark design and limitations; here prompts, rules, checks and missing outcomes stay visible.  \n"
-                    "**Agent evaluation, future work** — [Mohammadi et al. (2025)](https://arxiv.org/abs/2507.21504) points beyond this single-answer workflow; no agent behavior is evaluated here.")
-    st.caption("START HERE  /  1. Explore the offline demo  →  2. Opt in to a live comparison if ready  →  3. Read saved answers below")
-    if st.button("Try offline demo", help="Create a synthetic four-answer development run. No key or provider request is used."):
-        try:
-            folder = create_demo_run()
-        except (OSError, ValueError):
-            st.error("Could not create the offline demo. Check the local runs folder and try again.")
-        else:
-            st.session_state["selected_run"] = folder.name
-            st.session_state["walkthrough_follow"] = True
-            st.success("Synthetic demo saved. Its four example answers are ready to inspect below.")
-    st.caption("Four synthetic answers · no account, key or network request needed. Demo scores are not measured model performance.")
-    with st.expander("Compare live models (optional)", expanded=False):
-        control_panel()
+                    "**Benchmark limits** — [Ni et al. (2025)](https://arxiv.org/abs/2508.15361) surveys benchmark design and limitations; prompts, rules and missing outcomes stay visible.  \n"
+                    "**Agent evaluation** — [Mohammadi et al. (2025)](https://arxiv.org/abs/2507.21504) points beyond this single-answer workflow; no agent behavior is evaluated here.")
     st.markdown('<div class="studio-eyebrow" style="margin-top:2.2rem">EVIDENCE ARCHIVE</div>', unsafe_allow_html=True)
     st.header("Read the record.")
     st.caption("Saved runs only · choosing a run or answer never starts requests · dataset questions are project-authored")
