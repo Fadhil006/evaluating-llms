@@ -177,7 +177,7 @@ def _reanalyze_unlocked(run_dir):
                      source=config["source"])
     result["unresolved_attempts"] = unresolved
     result["paused"] = bool(unresolved or responses and responses[-1]["status"] == "rate_limited" or
-                            not config["synthetic"] and any(r.get("error") in
+                             config["source"] == "openrouter_live" and any(r.get("error") in
                             ("returned model differs from requested ID", "reported cost is positive",
                              "returned provider differs from requested slug") for r in responses))
     score_path = run_dir / "scores.jsonl"
@@ -278,6 +278,20 @@ def run_live_comparison(dataset, run_dir, models, providers, max_requests, on_pr
                                          max_requests, comparison=True, on_progress=on_progress)
 
 
+def run_opencode_comparison(dataset, run_dir, models, max_requests, on_progress=None):
+    """Run two local OpenCode free-labeled models with durable capped attempts."""
+    from .opencode import ALLOWED_MODELS
+
+    if (not isinstance(models, (list, tuple)) or len(models) != 2 or
+            any(not isinstance(model, str) or model not in ALLOWED_MODELS for model in models) or
+            models[0] == models[1]):
+        raise ValueError("exactly two distinct allowed OpenCode free models required")
+    with _locked(run_dir):
+        return _run_live_models_unlocked(dataset, Path(run_dir), list(models), None,
+                                         max_requests, comparison=True, on_progress=on_progress,
+                                         runtime="opencode")
+
+
 def _run_live_unlocked(dataset, run_dir, model, provider, max_requests):
     """Opt-in live run; unresolved attempts block all automatic redispatch."""
     from .openrouter import FREE_MODELS
@@ -289,32 +303,40 @@ def _run_live_unlocked(dataset, run_dir, model, provider, max_requests):
 
 
 def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
-                              comparison=False, on_progress=None):
+                              comparison=False, on_progress=None, runtime="openrouter"):
     """Dispatch with one cumulative budget; never retry an unresolved attempt."""
-    from .openrouter import generate
+    if runtime == "opencode":
+        from .opencode import generate
+    else:
+        from .openrouter import generate
 
     ceiling = 50 if comparison else 40
     if type(max_requests) is not int or not 1 <= max_requests <= ceiling:
         raise ValueError(f"max-requests must be between 1 and {ceiling}")
-    if not os.environ.get("OPENROUTER_API_KEY", "").strip():
+    if runtime == "openrouter" and not os.environ.get("OPENROUTER_API_KEY", "").strip():
         raise ValueError("OPENROUTER_API_KEY is required")
     dataset, run_dir = Path(dataset), Path(run_dir)
     items = load_dataset(dataset)
-    config = {**_config(items, models, False, "openrouter_live"),
-               "system_prompt": SYSTEM_PROMPT, "prompt_template": PROMPT_TEMPLATE,
-               "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS,
-               "code_version": "0.1.0"}
-    if comparison:
-        config["providers"] = providers
+    if runtime == "opencode":
+        config = {**_config(items, models, False, "opencode_live"), "runtime": "opencode",
+                  "prompt_template": PROMPT_TEMPLATE, "agent": "build", "pure": True,
+                  "format": "json", "permission": {"*": "deny"}, "timeout_seconds": 120}
     else:
-        config["provider"] = providers[models[0]]
+        config = {**_config(items, models, False, "openrouter_live"),
+                  "system_prompt": SYSTEM_PROMPT, "prompt_template": PROMPT_TEMPLATE,
+                  "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS,
+                  "code_version": "0.1.0"}
+        if comparison:
+            config["providers"] = providers
+        else:
+            config["provider"] = providers[models[0]]
     _prepare(run_dir, items, config)
     attempts = _records(run_dir / "attempts.jsonl")
     responses = _records(run_dir / "responses.jsonl")
     if _validate_live_logs(config, items, attempts, responses):
         raise ValueError("unresolved live attempt; inspect provider and logs manually before any retry")
     result = _reanalyze_unlocked(run_dir)
-    if any(r.get("error") in ("returned model differs from requested ID",
+    if runtime == "openrouter" and any(r.get("error") in ("returned model differs from requested ID",
                               "reported cost is positive", "returned provider differs from requested slug")
            for r in responses):
         raise ValueError("suspicious routing or billing; inspect saved records before resuming")
@@ -325,7 +347,7 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
         for item in items:
             if (model, item["id"]) in done or len(attempts) >= max_requests:
                 continue
-            provider = providers[model]
+            provider = providers[model] if runtime == "openrouter" else None
             if attempts:
                 time.sleep(3)
             intent = {"attempt_id": uuid4().hex, "model": model, "item_id": item["id"],
@@ -334,14 +356,17 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
             attempts.append(intent)
             start = time.perf_counter()
             try:
-                reply = generate(model, PROMPT_TEMPLATE.format(prompt=item["prompt"]),
-                                 SYSTEM_PROMPT, provider, temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
+                prompt = PROMPT_TEMPLATE.format(prompt=item["prompt"])
+                reply = (generate(model, prompt) if runtime == "opencode" else
+                         generate(model, prompt, SYSTEM_PROMPT, provider,
+                                  temperature=TEMPERATURE, max_tokens=MAX_TOKENS))
             except RuntimeError as exc:
                 # Only known HTTP classifications are definite responses; do not persist exception text.
                 message = str(exc)
-                if message == "OpenRouter HTTP 429 rate limited":
+                if runtime == "openrouter" and message == "OpenRouter HTTP 429 rate limited":
                     status, error = "rate_limited", "HTTP 429"
-                elif message.startswith("OpenRouter HTTP 5xx (") or message.startswith("OpenRouter HTTP 4xx ("):
+                elif runtime == "openrouter" and (message.startswith("OpenRouter HTTP 5xx (") or
+                                                   message.startswith("OpenRouter HTTP 4xx (")):
                     status, error = "error", "HTTP 5xx" if "5xx" in message else "HTTP 4xx"
                 else:
                     # Timeout/transport/unknown failure may have reached the provider.
@@ -352,22 +377,25 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
                 paused = True
                 break
             else:
-                usage = reply.get("usage") or {}
-                try:
-                    reported_cost = float(usage.get("cost", 0))
-                except (TypeError, ValueError, OverflowError):
-                    reported_cost = float("nan")
-                returned_provider_slug = reply.get("returned_provider_slug")
-                if not math.isfinite(reported_cost) or reported_cost > 0:
-                    status, error = "error", "reported cost is positive"
-                elif reply.get("returned_model") not in (None, model):
-                    status, error = "error", "returned model differs from requested ID"
-                elif returned_provider_slug is not None and returned_provider_slug != provider:
-                    # Only the returned slug is comparable; provider can be a display name.
-                    status, error = "error", "returned provider differs from requested slug"
+                if runtime == "opencode":
+                    status, error = "ok", None
                 else:
-                    status, error = (("truncated", None) if reply.get("finish_reason") == "length"
-                                     else ("ok", None))
+                    usage = reply.get("usage") or {}
+                    try:
+                        reported_cost = float(usage.get("cost", 0))
+                    except (TypeError, ValueError, OverflowError):
+                        reported_cost = float("nan")
+                    returned_provider_slug = reply.get("returned_provider_slug")
+                    if not math.isfinite(reported_cost) or reported_cost > 0:
+                        status, error = "error", "reported cost is positive"
+                    elif reply.get("returned_model") not in (None, model):
+                        status, error = "error", "returned model differs from requested ID"
+                    elif returned_provider_slug is not None and returned_provider_slug != provider:
+                        # Only the returned slug is comparable; provider can be a display name.
+                        status, error = "error", "returned provider differs from requested slug"
+                    else:
+                        status, error = (("truncated", None) if reply.get("finish_reason") == "length"
+                                         else ("ok", None))
             record = {"attempt_id": intent["attempt_id"], "synthetic": False, "model": model,
                       "item_id": item["id"], "status": status, "error": error,
                       "answer": reply["answer"] if reply is not None else None,
@@ -379,7 +407,8 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
                                 ("prompt_tokens", "completion_tokens", "total_tokens") if
                                 k in (reply.get("usage") or {})} | (
                                     {"cost": reported_cost if math.isfinite(reported_cost) else None}
-                                    if reply and "cost" in (reply.get("usage") or {}) else {})
+                                    if runtime == "openrouter" and reply and
+                                    "cost" in (reply.get("usage") or {}) else {})
                                 if reply else None,
                       "finish_reason": reply.get("finish_reason") if reply else None,
                       "generation_id": reply.get("generation_id") if reply else None,
@@ -399,9 +428,9 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
                              "completed": sum(r["status"] != "rate_limited" for r in responses),
                              "planned": len(items) * 2, "attempts": len(attempts),
                              "summary": result.copy()})
-            if status == "rate_limited" or error in ("returned model differs from requested ID",
-                                                      "reported cost is positive",
-                                                      "returned provider differs from requested slug"):
+            if runtime == "openrouter" and (status == "rate_limited" or error in
+                    ("returned model differs from requested ID", "reported cost is positive",
+                     "returned provider differs from requested slug")):
                 paused = True
                 break
         if paused:

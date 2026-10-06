@@ -26,6 +26,10 @@ MODEL_PROVIDERS = {
     "qwen/qwen3.8-27b:free": "modelrun/fp4",
     "cohere/north-mini-code:free": "cohere",
 }
+OPENCODE_MODELS = {
+    "opencode/ling-3.1-flash-free": "Ling 3.1 Flash",
+    "opencode/nemotron-3-ultra-free": "Nemotron 3 Ultra",
+}
 FILES = ("config.json", "dataset.jsonl", "responses.jsonl", "scores.jsonl", "summary.json")
 PROXY = {"code_syntax": "Syntax/signature proxy · human review needed",
          "summary_constraints": "Length/term proxy · human review needed"}
@@ -46,29 +50,38 @@ def control_panel():
         st.caption("01  /  RUN WORKBENCH")
         st.header("Make a careful run.")
         st.write("Choose two models for the same dataset. Nothing is sent until you confirm and start.")
+        backend = st.selectbox("Backend", ["OpenRouter", "OpenCode (free-labeled)"])
+        opencode = backend == "OpenCode (free-labeled)"
+        choices = OPENCODE_MODELS if opencode else MODEL_PROVIDERS
         with st.form("live_run", clear_on_submit=False):
             a, b = st.columns(2)
             dataset = a.selectbox("Dataset", ["dev.jsonl", "benchmark.jsonl"],
                                   format_func=lambda name: "Development · dev" if name == "dev.jsonl" else "Held-out · test")
-            models = [b.selectbox("First free model / pinned route", list(MODEL_PROVIDERS),
-                                  format_func=lambda name: f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}"),
-                      b.selectbox("Second free model / pinned route", list(MODEL_PROVIDERS), index=1,
-                                  format_func=lambda name: f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}")]
+            models = [b.selectbox("First OpenCode model" if opencode else "First free model / pinned route", list(choices),
+                                   format_func=lambda name: choices[name] if opencode else f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}"),
+                      b.selectbox("Second OpenCode model" if opencode else "Second free model / pinned route", list(choices), index=1,
+                                   format_func=lambda name: choices[name] if opencode else f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}")]
             st.caption("Exact model IDs: " + "  ·  ".join(models))
             c, d = st.columns(2)
-            run_name = c.text_input("Local run name", value="pilot-dev", help="Reuse a name only to resume the same two models, their order, and dataset; otherwise choose a new name.")
+            run_name = c.text_input("Local run name", value="pilot-opencode" if opencode else "pilot-dev",
+                                    key=f"run_name_{backend}",
+                                    help="Reuse a name only to resume the same backend, two models, their order, and dataset; otherwise choose a new name.")
             cap = d.number_input("Total attempt cap for both models", min_value=1, max_value=50, value=8, step=1,
                                  help="One shared cap across both models; earlier attempts and retries count when resuming. Not a per-click allowance.")
             workload = 8 if dataset == "dev.jsonl" else 48
             st.caption(f"WORKLOAD  /  {'Development: 4' if dataset == 'dev.jsonl' else 'Held-out: 24'} prompts × 2 models = {workload} planned answers. "
                        + (f"Cap {int(cap)} is below {workload}: this comparison will be partial." if cap < workload else
                           f"Cap {int(cap)} covers planned answers; retries also use the shared cap."))
-            st.caption("CHECKPOINT  /  The key stays local. A free listing does not guarantee quota or zero billing.")
-            confirmed = st.checkbox("I confirm outbound API requests to both selected free models within the shared cumulative cap, subject to local quota and spend-cap checks.")
-            submitted = st.form_submit_button("Check access & start comparison", type="primary")
+            if opencode:
+                st.caption("CHECKPOINT  /  OpenCode uses your existing provider login. Free labels may still use billable provider quota; no verified spend-cap preflight is available. Check your account before starting.")
+                confirmed = st.checkbox("I confirm outbound OpenCode requests to both models within the shared cumulative cap. Free labels may use billable provider quota; no verified spend-cap preflight is available.")
+            else:
+                st.caption("CHECKPOINT  /  The OpenRouter key stays local. A free listing does not guarantee quota or zero billing.")
+                confirmed = st.checkbox("I confirm outbound API requests to both selected free models within the shared cumulative cap, subject to local quota and spend-cap checks.")
+            submitted = st.form_submit_button("Start comparison" if opencode else "Check access & start comparison", type="primary")
     if not submitted:
         return
-    if len(set(models)) != 2 or any(model not in MODEL_PROVIDERS for model in models):
+    if len(set(models)) != 2 or any(model not in choices for model in models):
         st.error("Choose two different models before starting. Nothing was sent.")
         return
     if not confirmed:
@@ -79,24 +92,27 @@ def control_panel():
     except (TypeError, ValueError):
         st.error("Invalid run name. Use 1–64 letters, digits, dashes or underscores, starting with a letter or digit.")
         return
-    try:
-        # Import only after explicit confirmation; the saved-run viewer never touches providers.
-        from evaluation.access import preflight
-        access = preflight(max_requests=int(cap))
-        if not isinstance(access, dict) or access.get("allowed") is False or access.get("ok") is False:
-            raise ValueError("preflight denied")
-    except Exception:
-        st.error("Access check blocked this run. Check your local key, quota and spend cap. No model request was started.")
-        return
-    st.success(f"Local access check passed · shared cap {int(cap)} attempts for both models, including prior attempts · pinned routes: "
-               + " · ".join(f"{MODEL_NAMES[model]} → {MODEL_PROVIDERS[model]}" for model in models) + ".")
-    # Whitelist only numerical quota/cap fields; never render arbitrary backend data or credentials.
-    labels = {"free_remaining": "Free requests remaining", "free_limit": "Daily free limit",
-              "spend_limit": "Key spend cap", "spend_remaining": "Spend cap remaining"}
-    metadata = [f"{label}: {access[key]}" for key, label in labels.items()
-                if type(access.get(key)) in (int, float)]
-    if metadata:
-        st.caption(" · ".join(metadata))
+    if not opencode:
+        try:
+            # Import only after explicit confirmation; the saved-run viewer never touches providers.
+            from evaluation.access import preflight
+            access = preflight(max_requests=int(cap))
+            if not isinstance(access, dict) or access.get("allowed") is False or access.get("ok") is False:
+                raise ValueError("preflight denied")
+        except Exception:
+            st.error("Access check blocked this run. Check your local key, quota and spend cap. No model request was started.")
+            return
+        st.success(f"OpenRouter access check passed · shared cap {int(cap)} attempts for both models, including prior attempts · pinned routes: "
+                   + " · ".join(f"{MODEL_NAMES[model]} → {MODEL_PROVIDERS[model]}" for model in models) + ".")
+        # Whitelist only numerical quota/cap fields; never render arbitrary backend data or credentials.
+        labels = {"free_remaining": "Free requests remaining", "free_limit": "Daily free limit",
+                  "spend_limit": "Key spend cap", "spend_remaining": "Spend cap remaining"}
+        metadata = [f"{label}: {access[key]}" for key, label in labels.items()
+                    if type(access.get(key)) in (int, float)]
+        if metadata:
+            st.caption(" · ".join(metadata))
+    else:
+        st.info("OpenCode · no verified quota or spend-cap preflight. Requests start only after your confirmation above.")
     progress_area = st.empty()
 
     def show_saved_response(event):
@@ -112,8 +128,8 @@ def control_panel():
                     "error": "Request failed", "truncated": "Answer truncated"}
         score = event.get("score_status")
         with progress_area.container(border=True):
-            st.caption("02  /  LATEST SAVED RESPONSE")
-            st.subheader(f"{MODEL_NAMES[event['model']]} · {str(event.get('item_id', ''))}")
+            st.caption(f"02  /  {backend.upper()} · LATEST SAVED RESPONSE")
+            st.subheader(f"{choices[event['model']] if opencode else MODEL_NAMES[event['model']]} · {str(event.get('item_id', ''))}")
             a, b = st.columns(2)
             a.metric("Saved outcomes", f"{completed}/{planned}")
             b.metric("Cumulative attempts", attempts)
@@ -142,11 +158,16 @@ def control_panel():
                     st.code(event["explanation"], language="text")
 
     try:
-        from evaluation.runner import run_live_comparison
         with st.spinner("Waiting for saved responses from both models within the shared cap…"):
-            result = run_live_comparison(DATASETS / dataset, folder, models,
-                                         {model: MODEL_PROVIDERS[model] for model in models}, int(cap),
-                                         on_progress=show_saved_response)
+            if opencode:
+                from evaluation.runner import run_opencode_comparison
+                result = run_opencode_comparison(DATASETS / dataset, folder, models, int(cap),
+                                                 on_progress=show_saved_response)
+            else:
+                from evaluation.runner import run_live_comparison
+                result = run_live_comparison(DATASETS / dataset, folder, models,
+                                             {model: MODEL_PROVIDERS[model] for model in models}, int(cap),
+                                             on_progress=show_saved_response)
     except Exception:
         st.error("Run paused or failed. Inspect saved records locally before any manual retry; no automatic retry was started.")
         return
@@ -269,7 +290,7 @@ def rate(counts):
 
 def run_feedback(result, models):
     """Describe saved progress without calling a capped, incomplete run finished."""
-    progress = ", ".join(f"{MODEL_NAMES.get(model, model)}: "
+    progress = ", ".join(f"{MODEL_NAMES.get(model, OPENCODE_MODELS.get(model, model))}: "
                          f"{result.get('models', {}).get(model, {}).get('answered', 0)}/"
                          f"{result.get('models', {}).get(model, {}).get('total', 0)} answered, "
                          f"{result.get('models', {}).get(model, {}).get('pending', 0)} pending"
@@ -411,7 +432,7 @@ def main():
                     'Viewing saved evidence never sends requests.</div>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="studio-aside"><span class="studio-index" style="color:#a6d7bf">THE METHOD</span>'
-                     '<strong>Choose. Confirm. Inspect.</strong><small>Two pinned routes, one shared cap. '
+                     '<strong>Choose. Confirm. Inspect.</strong><small>Two fixed models, one shared cap. '
                     'Every answer stays available for review.</small></div>', unsafe_allow_html=True)
     with st.expander("Start or resume a live run", expanded=False):
         control_panel()
@@ -457,11 +478,14 @@ def main():
     st.badge("Synthetic example" if synthetic else "Saved live record" if "UNVERIFIED" not in evidence
              else "Evidence type unverified", color="orange" if synthetic or "UNVERIFIED" in evidence else "green")
     (st.warning if synthetic or "UNVERIFIED" in evidence else st.success)(evidence)
-    st.caption(f"Source: {summary.get('source', config.get('source', 'not recorded'))}  ·  "
+    source = summary.get("source", config.get("source", "not recorded"))
+    display_source = "OpenCode · saved live" if isinstance(source, str) and source.startswith("opencode") else source
+    st.caption(f"Source: {display_source}  ·  "
                f"Dataset: {config.get('dataset_version', 'not recorded')}")
     with st.expander("Run provenance and frozen dataset hash"):
         st.code(config.get("dataset_hash", "not recorded"), language="text")
-        st.write("Model routes:", config.get("providers", config.get("provider", "offline fixture")))
+        st.write("Model routes:", config.get("providers", config.get("provider", "OpenCode provider login" if
+                                                        isinstance(source, str) and source.startswith("opencode") else "offline fixture")))
         st.write("Created:", config.get("created_at", "not recorded"))
     with st.expander("How to read these results"):
         st.write("Correct / scored includes only objectively scored answers. Review, invalid, failed, "
@@ -510,7 +534,7 @@ def main():
                 total = counts.get("total", len(items))
                 completed = total - counts.get("pending", total)
                 if total:
-                    st.progress(completed / total, text=f"{MODEL_NAMES.get(model, model)} · {completed}/{total} saved outcomes")
+                    st.progress(completed / total, text=f"{MODEL_NAMES.get(model, OPENCODE_MODELS.get(model, model))} · {completed}/{total} saved outcomes")
             if any(summary["models"].get(model, {}).get("pending", 0) for model in models):
                 st.info("Partial comparison: pending answers are not counted as wrong. Same-item rates below use only shared scored items.")
         matched = matched_comparison(rows, models)

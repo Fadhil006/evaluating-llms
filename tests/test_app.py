@@ -43,7 +43,7 @@ class DashboardTests(unittest.TestCase):
                 self.assertIn("earlier attempts and retries count", cap_input.help)
                 self.assertEqual(cap_input.max, 50)
                 self.assertIn("shared cumulative cap", page.checkbox[0].label)
-                self.assertIn("same two models", page.text_input[0].help)
+                self.assertIn("two models", page.text_input[0].help)
                 self.assertTrue(any("4 prompts × 2 models = 8" in caption.value for caption in page.caption))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
@@ -112,6 +112,71 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(page.session_state["selected_run"], "my-dev")
                 page.run()
                 live.assert_called_once()
+
+    def test_opencode_requires_confirmation_and_shows_saved_scoring_without_preflight(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            shutil.copyfile(ROOT / "app.py", home / "app.py")
+            access = types.ModuleType("evaluation.access")
+            access.preflight = Mock(side_effect=AssertionError("OpenCode must not check OpenRouter access"))
+            first, second = "opencode/ling-3.1-flash-free", "opencode/nemotron-3-ultra-free"
+
+            def save_one(*args, on_progress):
+                on_progress({"model": first, "item_id": "dr1-o", "prompt": "Who is older?",
+                             "reference_answer": "B", "answer": "B", "status": "ok",
+                             "score_status": "scored", "correct": True, "explanation": "Choice matches reference.",
+                             "completed": 1, "planned": 8, "attempts": 1,
+                             "raw_payload": "SECRET MUST NOT APPEAR"})
+                return {"paused": True, "models": {first: {"answered": 1, "total": 4, "pending": 3},
+                                                    second: {"answered": 0, "total": 4, "pending": 4}}}
+
+            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
+                    "evaluation.runner.run_opencode_comparison", create=True, side_effect=save_one) as live, patch(
+                    "evaluation.runner.run_live_comparison") as router:
+                page = AppTest.from_file(str(home / "app.py")).run()
+                page = next(box for box in page.selectbox if box.label == "Backend").set_value(
+                    "OpenCode (free-labeled)").run()
+                self.assertFalse(page.exception)
+                self.assertEqual(next(box for box in page.selectbox if box.label == "First OpenCode model").value, first)
+                self.assertEqual(next(box for box in page.selectbox if box.label == "Second OpenCode model").value, second)
+                self.assertTrue(any("billable provider quota" in caption.value and
+                                    "no verified spend-cap preflight" in caption.value for caption in page.caption))
+                self.assertIn("outbound OpenCode requests", page.checkbox[0].label)
+                self.assertFalse(any("key stays local" in caption.value.lower() for caption in page.caption))
+                self.assertFalse(any("Free requests remaining" in caption.value for caption in page.caption))
+                access.preflight.assert_not_called()
+                live.assert_not_called()
+                router.assert_not_called()
+
+                page = page.button[0].click().run()
+                self.assertTrue(any("Confirm outbound requests" in warning.value for warning in page.warning))
+                access.preflight.assert_not_called()
+                live.assert_not_called()
+
+                page.checkbox[0].check()
+                next(box for box in page.text_input if box.label == "Local run name").set_value("../outside")
+                page = page.button[0].click().run()
+                live.assert_not_called()
+                next(box for box in page.text_input if box.label == "Local run name").set_value("opencode-dev")
+                page.checkbox[0].check()
+                page = page.button[0].click().run()
+                self.assertFalse(page.exception)
+                args, kwargs = live.call_args
+                self.assertEqual(args, (home / "datasets/v1.0/dev.jsonl", home / "runs/opencode-dev",
+                                        [first, second], 8))
+                self.assertTrue(callable(kwargs["on_progress"]))
+                self.assertEqual([metric.value for metric in page.metric[:2]], ["1/8", "1"])
+                self.assertTrue(any("Ling 3.1 Flash · dr1-o" in heading.value for heading in page.subheader))
+                self.assertTrue(any("Objective score: Correct" in text.value for text in page.markdown))
+                self.assertTrue(any("Score status: scored" in caption.value for caption in page.caption))
+                self.assertTrue(any(block.value == "Choice matches reference." for block in page.code))
+                self.assertTrue(any("1/8 planned model answers saved" in getattr(progress, "text", "")
+                                    for progress in page.get("progress")))
+                self.assertFalse(any("SECRET" in str(node.value) for kind in ("markdown", "caption", "code", "warning")
+                                     for node in page.get(kind)))
+                self.assertFalse(any("Free requests remaining" in caption.value for caption in page.caption))
+                access.preflight.assert_not_called()
+                router.assert_not_called()
 
     def test_live_progress_shows_saved_answer_and_objective_score(self):
         with tempfile.TemporaryDirectory() as temp:

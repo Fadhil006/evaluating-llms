@@ -7,8 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from evaluation.runner import reanalyze, run, run_live, run_live_comparison
+from evaluation.runner import reanalyze, run, run_live, run_live_comparison, run_opencode_comparison
 from evaluation.openrouter import FREE_MODELS
+from evaluation.opencode import ALLOWED_MODELS
 
 
 class RunnerTests(unittest.TestCase):
@@ -279,6 +280,97 @@ class LiveRunnerTests(unittest.TestCase):
         self.assertEqual(config["provider"], self.providers[self.models[0]])
         self.assertNotIn("providers", config)
         self.assertEqual(len(self.attempts()), 1)
+
+
+class OpenCodeRunnerTests(unittest.TestCase):
+    lines = RunnerTests.lines
+    attempts = LiveRunnerTests.attempts
+
+    def setUp(self):
+        RunnerTests.setUp(self)
+        self.models = list(ALLOWED_MODELS)
+        key = patch.dict("os.environ", {}, clear=True)
+        key.start()
+        self.addCleanup(key.stop)
+        sleeper = patch("evaluation.runner.time.sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    def test_score_events_resumed_cap_and_unchanged_openrouter(self):
+        events, calls = [], []
+
+        def generate(model, prompt):
+            calls.append((model, prompt))
+            return {"answer": "A", "raw_response": "A"}
+
+        def progress(event):
+            events.append(event)
+            self.assertEqual(event["summary"], json.loads((self.out / "summary.json").read_text()))
+            self.assertEqual(len(self.attempts()), len(events))
+            self.assertEqual(len(self.lines()), len(events))
+
+        with patch("evaluation.opencode.generate", side_effect=generate) as cli:
+            with patch("evaluation.openrouter.generate") as openrouter:
+                first = run_opencode_comparison(self.dataset, self.out, self.models, 2, progress)
+                self.assertEqual(first["models"][self.models[1]]["pending"], 2)
+                resumed = run_opencode_comparison(self.dataset, self.out, self.models, 4, progress)
+                run_opencode_comparison(self.dataset, self.out, self.models, 4, progress)
+                self.assertEqual(cli.call_count, 4)
+                openrouter.assert_not_called()
+        self.assertEqual([e["model"] for e in events], [self.models[0]] * 2 + [self.models[1]] * 2)
+        self.assertEqual([e["item_id"] for e in events], ["o", "p"] * 2)
+        self.assertEqual([e["completed"] for e in events], [1, 2, 3, 4])
+        self.assertEqual([e["attempts"] for e in events], [1, 2, 3, 4])
+        self.assertTrue(all(e["planned"] == 4 and e["score_status"] == "scored" and
+                            e["correct"] is True and e["answer"] == "A" and
+                            e["explanation"] == "Single choice compared to reference." and
+                            e["summary"]["source"] == "opencode_live" for e in events))
+        self.assertEqual(resumed["models"][self.models[1]]["answered"], 2)
+        self.assertEqual([call[1] for call in calls], ["Question: Choose one.\nAnswer:",
+                                                      "Question: Pick one.\nAnswer:"] * 2)
+        config = json.loads((self.out / "config.json").read_text())
+        self.assertEqual(config["runtime"], "opencode")
+        self.assertEqual(config["models"], self.models)
+        self.assertEqual(config["permission"], {"*": "deny"})
+        self.assertEqual(reanalyze(self.out)["source"], "opencode_live")
+        with self.assertRaisesRegex(ValueError, "config mismatch"):
+            run_opencode_comparison(self.dataset, self.out, self.models[::-1], 4)
+
+    def test_timeout_leaves_unresolved_and_blocks_redispatch(self):
+        events = []
+        with patch("evaluation.opencode.generate", side_effect=RuntimeError("secret timeout")) as cli:
+            result = run_opencode_comparison(self.dataset, self.out, self.models, 4, events.append)
+            self.assertTrue(result["paused"])
+            self.assertEqual(result["unresolved_attempts"], 1)
+            self.assertEqual(len(self.attempts()), 1)
+            self.assertFalse((self.out / "responses.jsonl").exists())
+            with self.assertRaisesRegex(ValueError, "unresolved live attempt"):
+                run_opencode_comparison(self.dataset, self.out, self.models, 4, events.append)
+            self.assertEqual(cli.call_count, 1)
+            self.assertEqual(events, [])
+
+    def test_shared_50_attempt_ceiling(self):
+        template = json.loads(self.dataset.read_text().splitlines()[0])
+        items = [{**template, "id": f"{n}-{variant}", "pair_id": str(n),
+                  "prompt": f"Choose {n} ({variant}).", "variant": variant}
+                 for n in range(13) for variant in ("original", "paraphrase")]
+        self.dataset.write_text("".join(json.dumps(item) + "\n" for item in items), encoding="utf-8")
+        with patch("evaluation.opencode.generate", return_value={"answer": "A", "raw_response": "A"}) as cli:
+            run_opencode_comparison(self.dataset, self.out, self.models, 48)
+            run_opencode_comparison(self.dataset, self.out, self.models, 50)
+            run_opencode_comparison(self.dataset, self.out, self.models, 50)
+            self.assertEqual(cli.call_count, 50)
+        self.assertEqual(len(self.attempts()), 50)
+        self.assertEqual(len(self.lines()), 50)
+
+    def test_model_validation_and_cap_before_dispatch(self):
+        with patch("evaluation.opencode.generate") as cli:
+            for models, cap in ((self.models[:1], 4), (self.models[:1] * 2, 4),
+                                ([self.models[0], "unlisted"], 4), (self.models, 0),
+                                (self.models, 51), (self.models, True)):
+                with self.subTest(models=models, cap=cap), self.assertRaises(ValueError):
+                    run_opencode_comparison(self.dataset, self.out, models, cap)
+            cli.assert_not_called()
 
 
 if __name__ == "__main__":
