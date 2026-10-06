@@ -2,6 +2,7 @@
 
 import csv
 import hashlib
+import html
 import io
 import json
 import re
@@ -122,6 +123,8 @@ def control_panel():
     else:
         st.info("OpenCode · no verified quota or spend-cap preflight. Requests start only after your confirmation above.")
     progress_area = st.empty()
+    activity_area = st.empty()
+    activity = []
 
     def show_saved_response(event):
         """Render only fields from a saved-response event, never provider metadata."""
@@ -133,26 +136,36 @@ def control_panel():
             return
         status = event.get("status")
         statuses = {"ok": "Answer saved", "rate_limited": "Rate limited · awaiting retry",
-                    "error": "Request failed", "truncated": "Answer truncated"}
+                     "error": "Request failed", "truncated": "Answer truncated"}
         score = event.get("score_status")
+        label = choices[event['model']] if opencode else MODEL_NAMES[event['model']]
+        item_id = str(event.get("item_id", ""))
+        outcome = (statuses.get(status, "No scored answer") if status != "ok" else
+                   "Scored · correct" if score == "scored" and event.get("correct") is True else
+                   "Scored · incorrect" if score == "scored" and event.get("correct") is False else
+                   "Review · no objective score" if score == "review" else
+                   "Invalid · no objective score" if score == "invalid" else
+                   "Unscored answer")
+        activity.append((label, item_id, outcome, completed, attempts))
         with progress_area.container(border=True):
-            st.caption(f"02  /  {backend.upper()} · LATEST SAVED RESPONSE")
-            st.subheader(f"{choices[event['model']] if opencode else MODEL_NAMES[event['model']]} · {str(event.get('item_id', ''))}")
+            st.caption(f"02  /  {backend.upper()} · LATEST SAVED EVENT")
+            st.subheader(f"{label} · {item_id}")
             a, b = st.columns(2)
             a.metric("Saved outcomes", f"{completed}/{planned}")
             b.metric("Cumulative attempts", attempts)
             st.progress(completed / planned, text=f"{completed}/{planned} planned model answers saved")
-            st.caption("Latest response only · full history appears in the saved-run viewer below.")
-            st.write("Question")
+            st.caption("Saved outcomes exclude rate limits; attempts include retries and earlier attempts when resuming. Full raw records and rules appear in the saved-run viewer below.")
+            st.write("1 / Dataset question")
             st.code(str(event.get("prompt") or "Not recorded"), language="text")
             if status == "ok":
-                st.write("Model answer")
+                st.write("2 / Saved extracted answer (raw response in inspector)")
                 st.code(str(event.get("answer") if event.get("answer") is not None else "No saved answer"), language="text")
             else:
                 st.warning(statuses.get(status, "Request did not produce a scored answer"))
-            st.write("Expected answer")
+            st.write("3 / Dataset reference")
             st.code(str(event.get("reference_answer") or "Not recorded"), language="text")
             if status == "ok":
+                st.write("4 / Saved scoring decision")
                 if score == "scored" and type(event.get("correct")) is bool:
                     st.write(f"Objective score: {'Correct' if event['correct'] else 'Incorrect'}")
                 elif score == "review":
@@ -164,6 +177,11 @@ def control_panel():
                 if isinstance(event.get("explanation"), str) and event["explanation"]:
                     st.write("Scoring explanation")
                     st.code(event["explanation"], language="text")
+        with activity_area.container(border=True):
+            st.caption("LIVE ACTIVITY  /  EVENTS SAVED THIS SUBMISSION")
+            st.write("Saved response events in arrival order · this list does not include unresolved attempts or earlier sessions.")
+            for name, question, decision, saved, tries in activity:
+                st.write(f"{name} · {question} — {decision} · {saved}/{planned} saved outcomes · {tries} cumulative attempts")
 
     try:
         with st.spinner("Waiting for saved responses from both models within the shared cap…"):
@@ -180,6 +198,7 @@ def control_panel():
         st.error("Run paused or failed. No automatic retry was started. Check this run's saved attempts and responses locally, then check your provider account before trying again; an uncertain request may have reached the provider.")
         return
     st.session_state["selected_run"] = folder.name
+    st.session_state["walkthrough_follow"] = True
     level, message = run_feedback(result, models)
     getattr(st, level)(message)
     if opencode and result.get("paused"):
@@ -345,6 +364,73 @@ def attention_matches(row, choice):
     return row["correct"] is True
 
 
+def walkthrough_html(row):
+    """A self-contained, accessible animation of one saved evaluation record."""
+    def safe(value):
+        return html.escape(str(value if value is not None else "Not recorded"), quote=True)
+
+    if row["score_status"] == "scored" and type(row["correct"]) is bool:
+        decision = "Correct" if row["correct"] else "Incorrect"
+        decision_note = "This answer has an objective score under the declared rule."
+    elif row["score_status"] == "review":
+        decision, decision_note = "Needs human review", "A proxy check cannot establish correctness."
+    elif row["score_status"] == "invalid":
+        decision, decision_note = "Invalid answer", "No objective correctness score is assigned."
+    else:
+        decision, decision_note = "No score yet", "Pending or failed requests are not counted as wrong."
+    steps = [
+        ("01", "The question", "A prompt from this project's saved dataset.", row["prompt"]),
+        ("02", "The model's answer", "The saved raw response. An empty response is not a wrong answer.",
+         row["raw_answer"] if row["raw_answer"] is not None else "No saved answer"),
+        ("03", "The reference", "The project-authored expected answer.", row["reference_answer"]),
+        ("04", "The check", f"Declared scorer: {row['scorer'] or 'not recorded'}.",
+         row["explanation"] or "No saved scoring explanation."),
+        ("05", "The decision", decision_note, decision),
+    ]
+    cards = "".join(
+        f'<article class="step" tabindex="-1"><span class="number">{number}</span>'
+        f'<div><h3>{safe(title)}</h3><p>{safe(note)}</p><div class="value">{safe(value)}</div></div></article>'
+        for number, title, note, value in steps
+    )
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+    <style>
+      *{{box-sizing:border-box}} body{{margin:0;font:16px/1.5 system-ui,sans-serif;color:#183532;background:#edf5f1}}
+      .shell{{border:1px solid #c2d8cf;border-radius:14px;overflow:hidden;background:#fff}}
+      .toolbar{{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid #c2d8cf;background:#f7faf8}}
+      .toolbar strong{{margin-right:auto}} button{{border:1px solid #146c64;border-radius:8px;background:#146c64;color:white;font:inherit;font-weight:650;padding:7px 12px;cursor:pointer}}
+      button.secondary{{background:white;color:#146c64}} button:focus-visible{{outline:3px solid #b75d37;outline-offset:2px}}
+      .counter{{color:#45635d;font-size:14px;min-width:75px;text-align:right}}
+      .viewport{{height:370px;overflow-y:auto;scroll-behavior:smooth;padding:18px 16px 28px}}
+      .step{{display:grid;grid-template-columns:48px 1fr;gap:12px;max-width:820px;margin:0 auto 16px;padding:16px;border:1px solid #c8d9d2;border-radius:12px;background:#f9fcfa;opacity:.66;transition:opacity .35s,border-color .35s,box-shadow .35s}}
+      .step.active{{opacity:1;border-color:#146c64;box-shadow:0 8px 24px #146c6420}}
+      .number{{display:grid;place-items:center;width:40px;height:40px;border-radius:50%;background:#dceee7;color:#146c64;font-weight:750}}
+      h3{{margin:0 0 3px;font-size:18px}} p{{margin:0 0 10px;color:#45635d;font-size:14px}}
+      .value{{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 12px;border-left:3px solid #b75d37;background:#fff;font-weight:550}}
+      @media(prefers-reduced-motion:reduce){{.viewport{{scroll-behavior:auto}}.step{{transition:none}}}}
+    </style></head><body><div class="shell">
+      <div class="toolbar"><strong>Follow one saved answer</strong><button id="toggle" type="button">Pause</button>
+        <button id="restart" class="secondary" type="button">Restart</button><span id="counter" class="counter" aria-live="polite">1 of 5</span></div>
+      <div id="viewport" class="viewport" aria-label="Evaluation walkthrough">{cards}</div>
+    </div><script>
+      const cards=[...document.querySelectorAll('.step')], viewport=document.getElementById('viewport');
+      const toggle=document.getElementById('toggle'), counter=document.getElementById('counter');
+      const reduced=window.matchMedia('(prefers-reduced-motion: reduce)');
+      let index=0, playing=!reduced.matches, timer;
+      function show(n){{index=Math.max(0,Math.min(n,cards.length-1));cards.forEach((card,i)=>card.classList.toggle('active',i===index));
+        counter.textContent=(index+1)+' of '+cards.length;
+        viewport.scrollTo({{top:cards[index].offsetTop-viewport.offsetTop-viewport.clientHeight/2+cards[index].clientHeight/2,
+          behavior:reduced.matches?'instant':'smooth'}});
+        if(index===cards.length-1){{playing=false;toggle.textContent='Play again';clearInterval(timer)}}}}
+      function start(){{clearInterval(timer);playing=true;toggle.textContent='Pause';
+        timer=setInterval(()=>{{if(document.hidden)return;if(index===cards.length-1){{clearInterval(timer);playing=false;toggle.textContent='Play again'}}else show(index+1)}},2600)}}
+      toggle.addEventListener('click',()=>{{if(playing){{playing=false;clearInterval(timer);toggle.textContent='Play'}}
+        else{{if(index===cards.length-1)show(0);start()}}}});
+      document.getElementById('restart').addEventListener('click',()=>{{show(0);if(!reduced.matches)start()}});
+      cards.forEach((card,i)=>card.addEventListener('click',()=>{{show(i);playing=false;clearInterval(timer);toggle.textContent='Play'}}));
+      show(0);if(playing)start();else toggle.textContent='Play';
+    </script></body></html>'''
+
+
 def main():
     st.set_page_config(page_title="Evaluation Studio / local evidence", page_icon="◈", layout="wide")
     st.markdown("""<style>
@@ -368,8 +454,13 @@ def main():
       .studio-eyebrow::before {content: ''; display: inline-block; width: 22px; height: 2px;
         vertical-align: middle; margin-right: 12px; background: var(--warm);}
       .studio-note {border-left: 2px solid var(--warm); margin: 1.1rem 0 1.5rem;
-        padding: .4rem 0 .4rem 1rem; color: var(--muted); max-width: 640px;
-        font-size: 1.04rem; line-height: 1.6;}
+         padding: .4rem 0 .4rem 1rem; color: var(--muted); max-width: 640px;
+         font-size: 1.04rem; line-height: 1.6;}
+      .studio-flow {display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: .55rem; margin: 1.5rem 0 1rem; padding: 0; list-style: none;}
+      .studio-flow li {border-top: 3px solid var(--accent); padding: .75rem .65rem;
+        background: #eaf3ee; border-radius: 0 0 .4rem .4rem; font-size: .9rem; line-height: 1.35;}
+      .studio-flow b {display: block; color: #885036; font-size: .7rem; letter-spacing: .12em; margin-bottom: .3rem;}
       div.st-key-workbench {background: #edf5f1; border: 1px solid #c2d8cf;
         border-radius: 1rem; padding: clamp(1.15rem, 3vw, 2rem);
         box-shadow: 0 18px 40px rgba(22,75,70,.07);}
@@ -421,6 +512,7 @@ def main():
       button:focus-visible, [role="tab"]:focus-visible {outline: 3px solid #b75d37 !important; outline-offset: 2px;}
       @media(max-width: 700px) {
         .block-container {padding: 1.5rem 1rem 4rem;}
+        .studio-flow {grid-template-columns: repeat(2, minmax(0, 1fr));}
         [data-testid="stTabs"] [role="tablist"] {overflow-x: auto;}
         [data-testid="stMetric"] {min-height: 0;}
         [data-testid="stCodeBlock"] pre {white-space: pre-wrap; overflow-wrap: anywhere;}
@@ -433,7 +525,24 @@ def main():
     st.markdown('<div class="studio-eyebrow">Evaluation studio / local-first research</div>', unsafe_allow_html=True)
     st.title("Evidence, not a leaderboard.")
     st.markdown('<div class="studio-note">Start with a saved example, then inspect real runs with care. '
-                'Viewing results never sends requests.</div>', unsafe_allow_html=True)
+                 'Viewing results never sends requests.</div>', unsafe_allow_html=True)
+    st.markdown('''<ol class="studio-flow" aria-label="Evaluation steps">
+      <li><b>01 / INPUT</b>Project-authored dataset prompt</li>
+      <li><b>02 / REQUEST</b>Chosen model and route</li>
+      <li><b>03 / EVIDENCE</b>Saved raw response</li>
+      <li><b>04 / CHECK</b>Declared scorer, rules and checks</li>
+      <li><b>05 / READOUT</b>Scored, review or failed; compare matched items</li>
+    </ol>''', unsafe_allow_html=True)
+    st.caption("METHOD / This is a project-authored dataset, not a benchmark taken from the cited papers. Objective scores use declared checks; proxy checks need human review.")
+    st.markdown("**Reading that shaped this workflow:** [Chang ’24](https://doi.org/10.1145/3641289) · "
+                "[Cao ’25](https://arxiv.org/abs/2504.18838) · "
+                "[Ni ’25](https://arxiv.org/abs/2508.15361) · "
+                "[Mohammadi ’25](https://arxiv.org/abs/2507.21504)  —  context, not the source of this dataset or its results.")
+    with st.expander("Research behind the method · four short references"):
+        st.markdown("**Capability categories** — [Chang et al. (2024), survey of LLM evaluation](https://doi.org/10.1145/3641289) informs the breadth of questions, not these answers or scores.  \n"
+                    "**Generalization and paired robustness** — [Cao et al. (2025)](https://arxiv.org/abs/2504.18838) discusses evaluation beyond fixed benchmarks; this app examines only saved original/paraphrase pairs.  \n"
+                    "**Benchmark limits and trustworthy reporting** — [Ni et al. (2025)](https://arxiv.org/abs/2508.15361) surveys benchmark design and limitations; here prompts, rules, checks and missing outcomes stay visible.  \n"
+                    "**Agent evaluation, future work** — [Mohammadi et al. (2025)](https://arxiv.org/abs/2507.21504) points beyond this single-answer workflow; no agent behavior is evaluated here.")
     st.caption("START HERE  /  1. Explore the offline demo  →  2. Opt in to a live comparison if ready  →  3. Read saved answers below")
     if st.button("Try offline demo", help="Create a synthetic four-answer development run. No key or provider request is used."):
         try:
@@ -442,13 +551,14 @@ def main():
             st.error("Could not create the offline demo. Check the local runs folder and try again.")
         else:
             st.session_state["selected_run"] = folder.name
+            st.session_state["walkthrough_follow"] = True
             st.success("Synthetic demo saved. Its four example answers are ready to inspect below.")
     st.caption("Four synthetic answers · no account, key or network request needed. Demo scores are not measured model performance.")
     with st.expander("Compare live models (optional)", expanded=False):
         control_panel()
     st.markdown('<div class="studio-eyebrow" style="margin-top:2.2rem">EVIDENCE ARCHIVE</div>', unsafe_allow_html=True)
     st.header("Read the record.")
-    st.caption("Saved runs only · choosing a run or answer never starts requests")
+    st.caption("Saved runs only · choosing a run or answer never starts requests · dataset questions are project-authored")
     choices = sorted((p for p in RUNS.iterdir() if p.is_dir() and not p.is_symlink()),
                      key=lambda p: p.name) if RUNS.is_dir() else []
     if not choices:
@@ -494,6 +604,31 @@ def main():
                  "truncated, and pending items have separate counts.")
         st.write("Coding and summarization are proxy checks requiring human review. "
                  "The results do not establish an overall model ranking.")
+
+    st.subheader("See how one answer is evaluated")
+    st.write("Watch the saved question, model answer, reference, check, and decision in order. "
+             "Use Pause or Restart to control the tour. This only reads local records.")
+    example_options = list(range(len(rows)))
+    first_scored = next((i for i, row in enumerate(rows) if row["score_status"] == "scored"), 0)
+    example_index = st.selectbox("Choose an answer to explain", example_options,
+                                 index=first_scored,
+                                 format_func=lambda i: f"{rows[i]['item_id']} · {MODEL_NAMES.get(rows[i]['model'], OPENCODE_MODELS.get(rows[i]['model'], rows[i]['model']))} · {rows[i]['category']}",
+                                 key="walkthrough_example")
+    if example_index is not None:
+        follow_walkthrough = st.session_state.pop("walkthrough_follow", False)
+        st.iframe(walkthrough_html(rows[example_index]),
+                  height=470, alt="Animated explanation of one saved evaluation answer")
+        if follow_walkthrough:
+            st.html("""<script>
+              requestAnimationFrame(() => {
+                const heading = document.getElementById('see-how-one-answer-is-evaluated');
+                if (heading) heading.scrollIntoView({
+                  behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+                  block: 'start'
+                });
+              });
+            </script>""", unsafe_allow_javascript=True)
+    st.caption("This animation follows one saved record. For the full rule and recorded checks, open Answer inspector below.")
 
     if len(models) == 2:
         overview, compare, categories, robustness, inspector = st.tabs(
@@ -567,6 +702,7 @@ def main():
             st.code(item["prompt"], language="text")
             st.write("Reference answer")
             st.code(item.get("reference_answer") or "Not recorded", language="text")
+            st.caption(f"Declared check: {item.get('scorer', 'not recorded')} · original/paraphrase pair: {item.get('pair_id', 'not recorded')}")
             selected_rows = {row["model"]: row for row in rows if row["item_id"] == item["id"]}
             for column, model in zip(st.columns(2, gap="medium"), models):
                 row = selected_rows[model]
@@ -655,6 +791,7 @@ def main():
 
     with inspector:
         st.header("Answer inspector")
+        st.caption("Follow one saved row from dataset input to decision. No requests are sent when you change filters or select a row.")
         left, middle, right = st.columns(3)
         selected_model = left.selectbox("Model", models, key="inspect_model")
         selected_category = middle.selectbox("Category", ["All", *sorted({r["category"] for r in rows})])
@@ -681,13 +818,28 @@ def main():
             if chosen >= len(shown):
                 chosen = 0
             row = shown[chosen]
-            st.caption("Select a row to inspect its saved prompt, response, and scoring details.")
-            st.subheader("Prompt")
+            st.caption("Select a row to inspect its saved prompt, raw response, exact declared rules, and recorded checks.")
+            st.subheader("1 / Dataset Prompt")
+            st.caption(f"Item {row['item_id']} · {row['category']} · {row['variant']} · pair {row['pair_id'] or 'none'} · project-authored dataset")
             st.write(row["prompt"])
-            st.subheader("Reference answer")
-            st.code(row["reference_answer"] or "Not recorded", language="text")
-            st.subheader("Raw model response")
+            st.subheader("2 / Chosen model")
+            st.code(row["model"], language="text")
+            st.subheader("3 / Saved raw model response")
             st.code(row["raw_answer"] if row["raw_answer"] is not None else "No saved answer", language="text")
+            st.caption(f"Response status: {row['response_status']}" +
+                       (" · A rate limit is not a saved answer." if row["response_status"] == "rate_limited" else ""))
+            st.subheader("4 / Declared scorer and rules")
+            st.write("Scorer:", row["scorer"] or "Not recorded")
+            st.write("Reference answer")
+            st.code(row["reference_answer"] or "Not recorded", language="text")
+            st.write("Exact declared rules")
+            st.code(json.dumps(row["rules"] if row["rules"] is not None else {}, ensure_ascii=False, indent=2), language="json")
+            if row["scorer"] in PROXY:
+                st.warning(PROXY[row["scorer"]])
+            st.subheader("5 / Saved checks and decision")
+            st.write("Saved checks")
+            st.code(json.dumps(row["checks"], ensure_ascii=False, indent=2) if row["checks"] is not None else
+                    "Not available — no saved check for this item", language="json" if row["checks"] is not None else "text")
             st.write(f"Response: {row['response_status']} · Score: {row['score_status'] or 'not scored'}")
             if type(row["correct"]) is bool:
                 st.write("Objective score: " + ("Correct" if row["correct"] else "Incorrect"))
@@ -697,11 +849,7 @@ def main():
                 st.warning("Invalid answer · not an objective correctness score.")
             if row["error"]:
                 st.warning("A request failure was saved for this item; inspect local logs for details.")
-            if row["scorer"] in PROXY:
-                st.warning(PROXY[row["scorer"]])
-            st.write("Scoring explanation:", row["explanation"] or "No saved score")
-            st.write("Scorer:", row["scorer"], "· Declared rules:", row["rules"] or {})
-            st.write("Saved checks:", row["checks"] if row["checks"] is not None else "Not available")
+            st.write("Scoring explanation:", row["explanation"] or "No saved score — pending or failed responses cannot be scored.")
             if isinstance(row["latency_ms"], (int, float)):
                 st.caption(f"Saved latency: {row['latency_ms']:.1f} ms (not comparable to live provider latency for fixtures)")
         st.download_button("Download saved run as CSV", data=export_csv(rows),

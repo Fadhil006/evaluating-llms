@@ -45,6 +45,8 @@ python -m pip install '.[ui]'
 streamlit run app.py
 ```
 
+For a first visit, click **Try offline demo**. The page scrolls to a five-step walkthrough of one saved answer; it advances through the question, response, reference, check, and decision. Use **Pause** or **Restart** to control it. The demo is synthetic and sends no provider requests.
+
 Choose a dev or held-out dataset, **two different** pinned free-model routes, a shared cumulative request cap (up to 50 attempts), and a local run name. The dev set needs 8 requests for both models; the held-out set needs 48, excluding retries. A smaller cap leaves the comparison partial. The form sends no model requests until you confirm and click; it checks your key's free quota and requires a finite key spending limit first. During a live run, the page shows the latest saved response, progress, reference answer, and scoring explanation; the saved-run viewer retains the full history. Unlike the CLI, the UI can read the ignored project `.env` directly (mode 600), or use an exported `OPENROUTER_API_KEY`. Switching saved runs and downloading an answer-level CSV never sends provider requests. Fixture outputs are synthetic and cannot establish real model accuracy or latency. The comparison shows only questions with objective scores for both models; review, invalid, failed, and pending items remain separate. Reusing a run name requires the same model order, provider routes, and dataset; the quota check currently requires enough remaining quota for the **full selected cap** even on resume.
 
 The website also offers **OpenCode (free-labeled)** for two configured OpenCode models when OpenRouter key limits are unavailable. This uses your installed OpenCode CLI and its existing provider login instead of the OpenRouter key check. The same two-model dataset, shared attempt cap, saved-answer progress, and explicit confirmation apply. It disables agent tool permissions for evaluation prompts and saves OpenCode results in separate run directories; do not reuse a run name from an OpenRouter comparison. A model's “free” label is **not a billing guarantee**: OpenCode has no verified spend-cap preflight here, so check provider/account terms yourself before confirming outbound requests. Timeouts or uncertain CLI failures pause the run for manual inspection; they are never retried automatically.
@@ -70,3 +72,14 @@ python -m evaluation --live --dataset datasets/v1.0/benchmark.jsonl --run-dir ru
 ```
 
 The live **CLI** still handles one model per run (`--max-requests` up to 40); the **website** can compare two models in one saved run (shared cap up to 50). Attempts count cumulatively, including retries, not per invocation. HTTP 429 stops the run; unresolved attempts require manual inspection of saved logs and provider state before any retry, never automatic redispatch. The 12 base pairs are exploratory, not a robust leaderboard; coding and summarization checks are proxies only, not functional correctness scores. **Measured results are pending.** See [`protocol.md`](protocol.md) for the proposed evaluation protocol.
+
+## Research references
+
+These papers inform the choice of evaluation questions and the limits of interpreting scores. The prompts, reference answers, scoring rules, and any saved results in this repository are project-authored; the papers are not the source of this dataset or evidence that the candidate models performed well.
+
+- Chang et al. (2024), [*A Survey on Evaluation of Large Language Models*](https://doi.org/10.1145/3641289) ([local text](sources/ai_project.md)). Surveys what, where, and how to evaluate LLMs across tasks, methods, and benchmarks.
+- Cao et al. (2025), [*Toward Generalizable Evaluation in the LLM Era: A Survey Beyond Benchmarks*](https://arxiv.org/abs/2504.18838). Discusses capability-based and automated evaluation, and why bounded test sets may not generalize to broader abilities.
+- Ni et al. (2025), [*A Survey on Large Language Model Benchmarks*](https://arxiv.org/abs/2508.15361). Reviews benchmark categories and limitations including contamination and cultural or linguistic bias.
+- Mohammadi et al. (2025), [*Evaluation and Benchmarking of LLM Agents: A Survey*](https://arxiv.org/abs/2507.21504). Covers agent behavior, reliability, and evaluation processes; agent workflows are outside this app's current single-answer evaluation.
+
+For the project's interpretation of these papers, see [`project_overview.md`](project_overview.md). For the proposed experiment and scoring rules, see [`protocol.md`](protocol.md).

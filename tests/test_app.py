@@ -45,6 +45,11 @@ class DashboardTests(unittest.TestCase):
                 page = AppTest.from_file(str(app)).run()
                 self.assertFalse(page.exception)
                 self.assertTrue(any("START HERE" in caption.value for caption in page.caption))
+                self.assertTrue(any("Evaluation steps" in note.value and "Saved raw response" in note.value
+                                    and "Declared scorer" in note.value for note in page.markdown))
+                self.assertTrue(any("project-authored dataset" in caption.value.lower() for caption in page.caption))
+                for citation in ("10.1145/3641289", "2504.18838", "2508.15361", "2507.21504"):
+                    self.assertTrue(any(citation in note.value for note in page.markdown), citation)
                 self.assertEqual(page.button[0].label, "Try offline demo")
                 self.assertTrue(any("offline demo" in note.value.lower() for note in page.markdown))
                 cap_input = next(box for box in page.number_input if box.label == "Total attempt cap for both models")
@@ -259,6 +264,39 @@ class DashboardTests(unittest.TestCase):
                 self.assertTrue(any("Rate limited" in warning.value for warning in page.warning))
                 self.assertFalse(any("Objective score:" in str(text.value) for text in page.markdown))
 
+    def test_live_activity_keeps_each_saved_event_but_not_backend_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            shutil.copyfile(ROOT / "app.py", home / "app.py")
+            access = types.ModuleType("evaluation.access")
+            access.preflight = Mock(return_value={"allowed": True})
+            model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+            def save_two(*args, on_progress):
+                for item, status, completed, attempts in (("dr1-o", "rate_limited", 0, 1),
+                                                          ("dr1-o", "ok", 1, 2)):
+                    on_progress({"model": model, "item_id": item, "prompt": "Which?",
+                                 "reference_answer": "B", "answer": "B" if status == "ok" else None,
+                                 "status": status, "score_status": "scored" if status == "ok" else None,
+                                 "correct": True if status == "ok" else None, "completed": completed,
+                                 "planned": 8, "attempts": attempts,
+                                 "raw_payload": "SECRET MUST NOT APPEAR"})
+                return {"paused": True, "models": {}}
+
+            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
+                    "evaluation.runner.run_live_comparison", side_effect=save_two):
+                page = AppTest.from_file(str(home / "app.py")).run()
+                page.checkbox[0].check()
+                page = submit(page)
+                self.assertFalse(page.exception)
+                self.assertTrue(any("Rate limited · awaiting retry · 0/8 saved outcomes · 1 cumulative attempts"
+                                    in text.value for text in page.markdown))
+                self.assertTrue(any("Scored · correct · 1/8 saved outcomes · 2 cumulative attempts"
+                                    in text.value for text in page.markdown))
+                self.assertTrue(any("unresolved attempts" in text.value for text in page.markdown))
+                self.assertFalse(any("SECRET" in str(node.value) for kind in ("markdown", "caption", "code")
+                                     for node in page.get(kind)))
+
     def test_capped_run_feedback_and_same_item_comparison(self):
         level, message = run_feedback({"paused": False, "models": {"m": {"pending": 2, "answered": 2, "total": 4},
                                                                   "n": {"pending": 3, "answered": 1, "total": 4}}}, ["m", "n"])
@@ -338,6 +376,8 @@ class DashboardTests(unittest.TestCase):
             self.assertTrue(any("Objective rate" in frame.value.columns for frame in dashboard.dataframe))
             self.assertTrue(any("Prompt" in heading.value for heading in dashboard.subheader))
             self.assertTrue(any("What is 3 plus 4" in block.value for block in dashboard.code))
+            self.assertTrue(any("Declared scorer and rules" in heading.value for heading in dashboard.subheader))
+            self.assertTrue(any("Saved checks and decision" in heading.value for heading in dashboard.subheader))
             self.assertTrue(any("B" == block.value for block in dashboard.code))
             self.assertTrue(any("Download saved run as CSV" in button.label
                                 for button in dashboard.get("download_button")))
@@ -349,6 +389,8 @@ class DashboardTests(unittest.TestCase):
             dashboard = search.set_value("dm1-o").run()
             self.assertFalse(dashboard.exception)
             self.assertTrue(any(block.value == "7" for block in dashboard.code))
+            self.assertTrue(any('"tolerance": 0.0001' in block.value for block in dashboard.code))
+            self.assertTrue(any('"within_tolerance": true' in block.value for block in dashboard.code))
             self.assertTrue(any("Showing 1 of 4" in caption.value for caption in dashboard.caption))
 
     def test_saved_two_model_run_shows_matched_comparison_without_requests(self):
