@@ -20,6 +20,11 @@ from evaluation.runner import run
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def submit(page):
+    return next(button for button in page.button if button.label in
+                ("Start comparison", "Check access & start comparison")).click().run()
+
+
 @unittest.skipUnless(AppTest is not None, "install .[ui] to test the dashboard")
 class DashboardTests(unittest.TestCase):
     def test_run_name_cannot_escape_runs(self):
@@ -39,16 +44,19 @@ class DashboardTests(unittest.TestCase):
                     return_value={"paused": False, "models": {}}) as live:
                 page = AppTest.from_file(str(app)).run()
                 self.assertFalse(page.exception)
+                self.assertTrue(any("START HERE" in caption.value for caption in page.caption))
+                self.assertEqual(page.button[0].label, "Try offline demo")
+                self.assertTrue(any("offline demo" in note.value.lower() for note in page.markdown))
                 cap_input = next(box for box in page.number_input if box.label == "Total attempt cap for both models")
                 self.assertIn("earlier attempts and retries count", cap_input.help)
                 self.assertEqual(cap_input.max, 50)
-                self.assertIn("shared cumulative cap", page.checkbox[0].label)
+                self.assertIn("shared cap", page.checkbox[0].label)
                 self.assertIn("two models", page.text_input[0].help)
-                self.assertTrue(any("4 prompts × 2 models = 8" in caption.value for caption in page.caption))
+                self.assertTrue(any("4 questions × 2 models = 8" in caption.value for caption in page.caption))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
 
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
                 access.preflight.assert_not_called()
                 live.assert_not_called()
@@ -56,7 +64,7 @@ class DashboardTests(unittest.TestCase):
                 page.checkbox[0].check()
                 next(box for box in page.selectbox if box.label == "Second free model / pinned route").set_value(
                     "nvidia/nemotron-3-ultra-550b-a55b:free")
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertTrue(any("two different models" in error.value for error in page.error))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
@@ -65,7 +73,7 @@ class DashboardTests(unittest.TestCase):
                     "google/gemma-4-31b-it:free")
                 page.checkbox[0].check()
                 next(box for box in page.text_input if box.label == "Local run name").set_value("../outside")
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
                 access.preflight.assert_not_called()
                 live.assert_not_called()
@@ -73,15 +81,16 @@ class DashboardTests(unittest.TestCase):
                 page.checkbox[0].check()
                 next(box for box in page.text_input if box.label == "Local run name").set_value("my-dev")
                 access.preflight.side_effect = ValueError("SECRET MUST NOT APPEAR")
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
                 self.assertFalse(any("SECRET" in error.value for error in page.error))
+                self.assertTrue(any("missing spend limit" in error.value for error in page.error))
                 live.assert_not_called()
 
                 access.preflight.side_effect = None
                 access.preflight.return_value = {"allowed": False}
                 page.checkbox[0].check()
-                page = page.button[0].click().run()
+                page = submit(page)
                 live.assert_not_called()
 
                 access.preflight.return_value = {"free_remaining": 10, "free_limit": 50,
@@ -92,7 +101,7 @@ class DashboardTests(unittest.TestCase):
                 next(box for box in page.selectbox if box.label == "First free model / pinned route").set_value(
                     "qwen/qwen3.8-27b:free")
                 next(box for box in page.number_input if box.label == "Total attempt cap for both models").set_value(3)
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
                 access.preflight.assert_called_with(max_requests=3)
                 live.assert_called_once()
@@ -103,7 +112,7 @@ class DashboardTests(unittest.TestCase):
                                          "google/gemma-4-31b-it:free": "google-ai-studio"}, 3))
                 self.assertTrue(callable(kwargs["on_progress"]))
                 self.assertFalse(any(heading.value == "Latest saved response" for heading in page.subheader))
-                self.assertTrue(any("24 prompts × 2 models = 48" in caption.value and "partial" in caption.value
+                self.assertTrue(any("24 questions × 2 models = 48" in caption.value and "partial" in caption.value
                                     for caption in page.caption))
                 self.assertTrue(any("Free requests remaining: 10" in caption.value for caption in page.caption))
                 self.assertFalse(any("SECRET" in caption.value for caption in page.caption))
@@ -134,33 +143,34 @@ class DashboardTests(unittest.TestCase):
                     "evaluation.runner.run_opencode_comparison", create=True, side_effect=save_one) as live, patch(
                     "evaluation.runner.run_live_comparison") as router:
                 page = AppTest.from_file(str(home / "app.py")).run()
-                page = next(box for box in page.selectbox if box.label == "Backend").set_value(
+                page = next(box for box in page.selectbox if box.label == "How will you connect?").set_value(
                     "OpenCode (free-labeled)").run()
                 self.assertFalse(page.exception)
-                self.assertEqual(next(box for box in page.selectbox if box.label == "First OpenCode model").value, first)
-                self.assertEqual(next(box for box in page.selectbox if box.label == "Second OpenCode model").value, second)
-                self.assertTrue(any("billable provider quota" in caption.value and
-                                    "no verified spend-cap preflight" in caption.value for caption in page.caption))
-                self.assertIn("outbound OpenCode requests", page.checkbox[0].label)
+                self.assertFalse(any("OpenCode model" in box.label for box in page.selectbox))
+                self.assertTrue(any("Ling 3.1 Flash + Nemotron 3 Ultra" in text.value for text in page.markdown))
+                self.assertTrue(any("billable quota" in caption.value and
+                                    "no verified spend-cap check" in caption.value for caption in page.caption))
+                self.assertIn("via OpenCode", page.checkbox[0].label)
                 self.assertFalse(any("key stays local" in caption.value.lower() for caption in page.caption))
                 self.assertFalse(any("Free requests remaining" in caption.value for caption in page.caption))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
                 router.assert_not_called()
 
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertTrue(any("Confirm outbound requests" in warning.value for warning in page.warning))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
 
                 page.checkbox[0].check()
                 next(box for box in page.text_input if box.label == "Local run name").set_value("../outside")
-                page = page.button[0].click().run()
+                page = submit(page)
                 live.assert_not_called()
                 next(box for box in page.text_input if box.label == "Local run name").set_value("opencode-dev")
                 page.checkbox[0].check()
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
+                self.assertTrue(any("unresolved attempt" in info.value for info in page.info))
                 args, kwargs = live.call_args
                 self.assertEqual(args, (home / "datasets/v1.0/dev.jsonl", home / "runs/opencode-dev",
                                         [first, second], 8))
@@ -201,7 +211,7 @@ class DashboardTests(unittest.TestCase):
                 access.preflight.assert_not_called()
                 live.assert_not_called()
                 page.checkbox[0].check()
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
                 self.assertEqual(page.metric[0].value, "1/8")
                 self.assertEqual(page.metric[1].value, "2")
@@ -235,7 +245,7 @@ class DashboardTests(unittest.TestCase):
                     "evaluation.runner.run_live_comparison", side_effect=save_one):
                 page = AppTest.from_file(str(home / "app.py")).run()
                 page.checkbox[0].check()
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
                 self.assertTrue(any("Needs human review" in info.value for info in page.info))
                 self.assertTrue(any("Score status: review" in caption.value for caption in page.caption))
@@ -244,7 +254,7 @@ class DashboardTests(unittest.TestCase):
                 event.update(status="rate_limited", score_status=None, correct=None,
                              explanation=None, answer=None, attempts=4)
                 page.checkbox[0].check()
-                page = page.button[0].click().run()
+                page = submit(page)
                 self.assertFalse(page.exception)
                 self.assertTrue(any("Rate limited" in warning.value for warning in page.warning))
                 self.assertFalse(any("Objective score:" in str(text.value) for text in page.markdown))
@@ -305,7 +315,7 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(empty.exception)
             self.assertEqual(empty.title[0].value, "Evidence, not a leaderboard.")
             self.assertEqual([heading.value for heading in empty.header[:2]],
-                             ["Make a careful run.", "Read the record."])
+                              ["Compare two models.", "Read the record."])
             self.assertTrue(any("No saved runs found" in message.value for message in empty.info))
 
             fixtures = home / "fixtures.json"
@@ -362,6 +372,41 @@ class DashboardTests(unittest.TestCase):
                 self.assertTrue(any("Partial comparison" in info.value for info in page.info))
                 self.assertTrue(any("first ·" in getattr(progress, "text", "") for progress in page.get("progress")))
                 self.assertTrue(any("second ·" in getattr(progress, "text", "") for progress in page.get("progress")))
+                access.preflight.assert_not_called()
+                live.assert_not_called()
+
+    def test_empty_live_record_does_not_claim_measured_comparison(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            app = home / "app.py"
+            shutil.copyfile(ROOT / "app.py", app)
+            fixtures = home / "fixtures.json"
+            fixtures.write_text(json.dumps({"first": {"dr1-o": "B"}, "second": {"dr1-o": "B"}}), encoding="utf-8")
+            folder = home / "runs" / "empty-live"
+            run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, folder, ["first", "second"])
+            # Simulate a saved, unresolved live run with no completed responses.
+            for name in ("config.json", "summary.json"):
+                path = folder / name
+                data = json.loads(path.read_text(encoding="utf-8"))
+                data.update(synthetic=False, source="opencode_live")
+                if name == "summary.json":
+                    for counts in data["models"].values():
+                        counts.update(answered=0, scored=0, correct=0, incorrect=0, pending=4)
+                path.write_text(json.dumps(data), encoding="utf-8")
+            (folder / "responses.jsonl").write_text("", encoding="utf-8")
+            (folder / "scores.jsonl").write_text("", encoding="utf-8")
+            access = types.ModuleType("evaluation.access")
+            access.preflight = Mock()
+            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
+                    "evaluation.runner.run_opencode_comparison") as live:
+                page = AppTest.from_file(str(app)).run()
+                self.assertFalse(page.exception)
+                self.assertTrue(any("No model responses are saved" in warning.value and
+                                    "may still have reached" in warning.value for warning in page.warning))
+                self.assertTrue(any("No questions have objective scores for both models" in info.value
+                                    for info in page.info))
+                self.assertTrue(any("Source: OpenCode" in caption.value for caption in page.caption))
+                self.assertFalse(any("Shared scored items" in frame.value.columns for frame in page.dataframe))
                 access.preflight.assert_not_called()
                 live.assert_not_called()
 

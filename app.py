@@ -48,20 +48,29 @@ def safe_run_path(name):
 def control_panel():
     with st.container(border=True, key="workbench"):
         st.caption("01  /  RUN WORKBENCH")
-        st.header("Make a careful run.")
-        st.write("Choose two models for the same dataset. Nothing is sent until you confirm and start.")
-        backend = st.selectbox("Backend", ["OpenRouter", "OpenCode (free-labeled)"])
+        st.header("Compare two models.")
+        st.write("Start with the four-answer offline demo above. For a live run, choose one dataset and two models; nothing is sent until you confirm.")
+        backend = st.selectbox("How will you connect?", ["OpenRouter", "OpenCode (free-labeled)"])
         opencode = backend == "OpenCode (free-labeled)"
         choices = OPENCODE_MODELS if opencode else MODEL_PROVIDERS
+        st.caption("OpenCode uses your existing provider login; 'free' labels may still use billable quota and there is no verified spend-cap check." if opencode else
+                   "OpenRouter uses a local key and checks free-request quota and your key's spend limit before starting. A free listing is not a billing guarantee.")
         with st.form("live_run", clear_on_submit=False):
             a, b = st.columns(2)
             dataset = a.selectbox("Dataset", ["dev.jsonl", "benchmark.jsonl"],
                                   format_func=lambda name: "Development · dev" if name == "dev.jsonl" else "Held-out · test")
-            models = [b.selectbox("First OpenCode model" if opencode else "First free model / pinned route", list(choices),
-                                   format_func=lambda name: choices[name] if opencode else f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}"),
-                      b.selectbox("Second OpenCode model" if opencode else "Second free model / pinned route", list(choices), index=1,
-                                   format_func=lambda name: choices[name] if opencode else f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}")]
-            st.caption("Exact model IDs: " + "  ·  ".join(models))
+            if opencode:
+                models = list(OPENCODE_MODELS)
+                b.write("**Models · fixed pair**")
+                b.write("Ling 3.1 Flash + Nemotron 3 Ultra")
+            else:
+                models = [b.selectbox("First free model / pinned route", list(choices),
+                                      format_func=lambda name: f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}"),
+                          b.selectbox("Second free model / pinned route", list(choices), index=1,
+                                      format_func=lambda name: f"{MODEL_NAMES[name]} · {MODEL_PROVIDERS[name]}")]
+            with st.expander("Show exact model IDs"):
+                for model in models:
+                    st.code(model, language="text")
             c, d = st.columns(2)
             run_name = c.text_input("Local run name", value="pilot-opencode" if opencode else "pilot-dev",
                                     key=f"run_name_{backend}",
@@ -69,15 +78,13 @@ def control_panel():
             cap = d.number_input("Total attempt cap for both models", min_value=1, max_value=50, value=8, step=1,
                                  help="One shared cap across both models; earlier attempts and retries count when resuming. Not a per-click allowance.")
             workload = 8 if dataset == "dev.jsonl" else 48
-            st.caption(f"WORKLOAD  /  {'Development: 4' if dataset == 'dev.jsonl' else 'Held-out: 24'} prompts × 2 models = {workload} planned answers. "
+            st.caption(f"{'Development: 4' if dataset == 'dev.jsonl' else 'Held-out: 24'} questions × 2 models = {workload} planned answers. "
                        + (f"Cap {int(cap)} is below {workload}: this comparison will be partial." if cap < workload else
                           f"Cap {int(cap)} covers planned answers; retries also use the shared cap."))
             if opencode:
-                st.caption("CHECKPOINT  /  OpenCode uses your existing provider login. Free labels may still use billable provider quota; no verified spend-cap preflight is available. Check your account before starting.")
-                confirmed = st.checkbox("I confirm outbound OpenCode requests to both models within the shared cumulative cap. Free labels may use billable provider quota; no verified spend-cap preflight is available.")
+                confirmed = st.checkbox("I agree to send requests via OpenCode to both models, up to the shared cap. Free labels may use billable provider quota; there is no verified spend-cap check.")
             else:
-                st.caption("CHECKPOINT  /  The OpenRouter key stays local. A free listing does not guarantee quota or zero billing.")
-                confirmed = st.checkbox("I confirm outbound API requests to both selected free models within the shared cumulative cap, subject to local quota and spend-cap checks.")
+                confirmed = st.checkbox("I agree to send requests via OpenRouter to both models, up to the shared cap, after the local key and quota check.")
             submitted = st.form_submit_button("Start comparison" if opencode else "Check access & start comparison", type="primary")
     if not submitted:
         return
@@ -100,7 +107,7 @@ def control_panel():
             if not isinstance(access, dict) or access.get("allowed") is False or access.get("ok") is False:
                 raise ValueError("preflight denied")
         except Exception:
-            st.error("Access check blocked this run. Check your local key, quota and spend cap. No model request was started.")
+            st.error("OpenRouter access check blocked this run; no model request was started. Check your local key, remaining free requests and key spend limit in your OpenRouter account. A missing spend limit can block the check. You can lower the shared cap or try the offline demo; only retry after checking your account.")
             return
         st.success(f"OpenRouter access check passed · shared cap {int(cap)} attempts for both models, including prior attempts · pinned routes: "
                    + " · ".join(f"{MODEL_NAMES[model]} → {MODEL_PROVIDERS[model]}" for model in models) + ".")
@@ -169,11 +176,13 @@ def control_panel():
                                              {model: MODEL_PROVIDERS[model] for model in models}, int(cap),
                                              on_progress=show_saved_response)
     except Exception:
-        st.error("Run paused or failed. Inspect saved records locally before any manual retry; no automatic retry was started.")
+        st.error("Run paused or failed. No automatic retry was started. Check this run's saved attempts and responses locally, then check your provider account before trying again; an uncertain request may have reached the provider.")
         return
     st.session_state["selected_run"] = folder.name
     level, message = run_feedback(result, models)
     getattr(st, level)(message)
+    if opencode and result.get("paused"):
+        st.info("OpenCode paused: inspect attempts.jsonl and responses.jsonl in this run and check your provider account before trying again. An unresolved attempt may have reached the provider even if no answer was saved.")
 
 
 def create_demo_run():
@@ -297,7 +306,7 @@ def run_feedback(result, models):
                          for model in models)
     pending = sum(result.get("models", {}).get(model, {}).get("pending", 0) for model in models)
     if result.get("paused"):
-        return "warning", f"Comparison paused. {progress}. Inspect saved records before resuming."
+        return "warning", f"Comparison paused. {progress}. Inspect saved records before trying again."
     if pending:
         return "warning", (f"Partial comparison: {pending} answer{'s' if pending != 1 else ''} still pending. "
                            f"{progress}. The shared cap may limit coverage; inspect saved records before increasing it.")
@@ -360,10 +369,6 @@ def main():
       .studio-note {border-left: 2px solid var(--warm); margin: 1.1rem 0 1.5rem;
         padding: .4rem 0 .4rem 1rem; color: var(--muted); max-width: 640px;
         font-size: 1.04rem; line-height: 1.6;}
-      .studio-aside {margin-top: .65rem; padding: 1.15rem 1.35rem; background: #164b46;
-        color: #f0f8f5; border-radius: .85rem; box-shadow: 0 14px 30px rgba(22,75,70,.13);}
-      .studio-aside strong {display: block; color: #fff; font: 1.35rem/1.25 Georgia,serif; margin: .55rem 0;}
-      .studio-aside small {color: #d7ebe5; line-height: 1.5;}
       div.st-key-workbench {background: #edf5f1; border: 1px solid #c2d8cf;
         border-radius: 1rem; padding: clamp(1.15rem, 3vw, 2rem);
         box-shadow: 0 18px 40px rgba(22,75,70,.07);}
@@ -415,29 +420,21 @@ def main():
       button:focus-visible, [role="tab"]:focus-visible {outline: 3px solid #b75d37 !important; outline-offset: 2px;}
       @media(max-width: 700px) {
         .block-container {padding: 1.5rem 1rem 4rem;}
-        .studio-aside {margin-bottom: 1.2rem;}
         [data-testid="stTabs"] [role="tablist"] {overflow-x: auto;}
         [data-testid="stMetric"] {min-height: 0;}
+        [data-testid="stCodeBlock"] pre {white-space: pre-wrap; overflow-wrap: anywhere;}
       }
       @media(prefers-reduced-motion: reduce) {
         div[data-testid="stFormSubmitButton"] button:hover, div[data-testid="stDownloadButton"] button:hover {transform: none;}
       }
     </style>""", unsafe_allow_html=True)
 
-    left, right = st.columns([3, 1.15], vertical_alignment="center")
-    with left:
-        st.markdown('<div class="studio-eyebrow">Evaluation studio / local-first research</div>', unsafe_allow_html=True)
-        st.title("Evidence, not a leaderboard.")
-        st.markdown('<div class="studio-note">Run with a clear limit. Read every result in context. '
-                    'Viewing saved evidence never sends requests.</div>', unsafe_allow_html=True)
-    with right:
-        st.markdown('<div class="studio-aside"><span class="studio-index" style="color:#a6d7bf">THE METHOD</span>'
-                     '<strong>Choose. Confirm. Inspect.</strong><small>Two fixed models, one shared cap. '
-                    'Every answer stays available for review.</small></div>', unsafe_allow_html=True)
-    with st.expander("Start or resume a live run", expanded=False):
-        control_panel()
-    demo_col, note_col = st.columns([1, 2], vertical_alignment="center")
-    if demo_col.button("Try offline demo", help="Create a synthetic four-answer development run. No key or provider request is used."):
+    st.markdown('<div class="studio-eyebrow">Evaluation studio / local-first research</div>', unsafe_allow_html=True)
+    st.title("Evidence, not a leaderboard.")
+    st.markdown('<div class="studio-note">Start with a saved example, then inspect real runs with care. '
+                'Viewing results never sends requests.</div>', unsafe_allow_html=True)
+    st.caption("START HERE  /  1. Explore the offline demo  →  2. Opt in to a live comparison if ready  →  3. Read saved answers below")
+    if st.button("Try offline demo", help="Create a synthetic four-answer development run. No key or provider request is used."):
         try:
             folder = create_demo_run()
         except (OSError, ValueError):
@@ -445,7 +442,9 @@ def main():
         else:
             st.session_state["selected_run"] = folder.name
             st.success("Synthetic demo saved. Its four example answers are ready to inspect below.")
-    note_col.caption("Explore four synthetic development answers without a key or network request.")
+    st.caption("Four synthetic answers · no account, key or network request needed. Demo scores are not measured model performance.")
+    with st.expander("Compare live models (optional)", expanded=False):
+        control_panel()
     st.markdown('<div class="studio-eyebrow" style="margin-top:2.2rem">EVIDENCE ARCHIVE</div>', unsafe_allow_html=True)
     st.header("Read the record.")
     st.caption("Saved runs only · choosing a run or answer never starts requests")
@@ -476,12 +475,14 @@ def main():
                 else "EVIDENCE TYPE UNVERIFIED · inspect run metadata before interpreting results")
     st.caption("EVIDENCE STATUS  /  READ BEFORE COMPARING")
     st.badge("Synthetic example" if synthetic else "Saved live record" if "UNVERIFIED" not in evidence
-             else "Evidence type unverified", color="orange" if synthetic or "UNVERIFIED" in evidence else "green")
-    (st.warning if synthetic or "UNVERIFIED" in evidence else st.success)(evidence)
+             else "Evidence type unverified", color="orange" if synthetic or "UNVERIFIED" in evidence else "blue")
+    (st.warning if synthetic or "UNVERIFIED" in evidence else st.info)(evidence)
     source = summary.get("source", config.get("source", "not recorded"))
     display_source = "OpenCode · saved live" if isinstance(source, str) and source.startswith("opencode") else source
     st.caption(f"Source: {display_source}  ·  "
                f"Dataset: {config.get('dataset_version', 'not recorded')}")
+    if not synthetic and not responses:
+        st.warning("No model responses are saved in this run. An attempted request may still have reached the provider. Inspect local attempts and your provider account before trying again; there is no measured comparison here.")
     with st.expander("Run provenance and frozen dataset hash"):
         st.code(config.get("dataset_hash", "not recorded"), language="text")
         st.write("Model routes:", config.get("providers", config.get("provider", "OpenCode provider login" if
@@ -497,7 +498,7 @@ def main():
         ["Overview", "By category", "Paired robustness", "Answer inspector"])
     with overview:
         st.header("Model coverage")
-        st.caption("Counts below are from the saved summary. Accuracy uses only explicitly scored answers.")
+        st.caption("Saved results only. A blank score means there are no objectively scored answers; pending and failed requests are not counted as wrong.")
         focus = st.selectbox("Focus model", models, key="overview_model")
         focused = summary["models"].get(focus, {})
         correct, scored = focused.get("correct", 0), focused.get("scored", 0)
@@ -542,9 +543,12 @@ def main():
             st.subheader("Same-item comparison")
             st.caption("Includes only items with an objective score from every model. "
                        "Coverage and failures remain visible above; no overall ranking is inferred.")
-            st.dataframe(matched, width="stretch", hide_index=True,
-                         column_config={"Matched rate": st.column_config.ProgressColumn(
-                             "Matched rate", format="%.0f%%", min_value=0, max_value=1)})
+            if matched[0]["Shared scored items"]:
+                st.dataframe(matched, width="stretch", hide_index=True,
+                             column_config={"Matched rate": st.column_config.ProgressColumn(
+                                 "Matched rate", format="%.0f%%", min_value=0, max_value=1)})
+            else:
+                st.info("No questions have objective scores for both models yet. Check coverage and saved answers before comparing.")
         st.caption("No cost or token estimates: the saved records do not provide a comparable measure.")
 
     with categories:
@@ -621,7 +625,7 @@ def main():
                  (selected_category == "All" or row["category"] == selected_category) and
                  attention_matches(row, attention) and
                  (not query or query.casefold() in f"{row['item_id']} {row['prompt']}".casefold())]
-        st.caption(f"Showing {len(shown)} of {len(items)} frozen items for {selected_model}")
+        st.caption(f"Showing {len(shown)} of {len(items)} saved dataset questions for {selected_model}")
         if not shown:
             st.info("No answers match these filters. Try a broader category, status, or search.")
         table = [{"Item": r["item_id"], "Category": r["category"], "Variant": r["variant"],
@@ -644,7 +648,13 @@ def main():
             st.code(row["reference_answer"] or "Not recorded", language="text")
             st.subheader("Raw model response")
             st.code(row["raw_answer"] if row["raw_answer"] is not None else "No saved answer", language="text")
-            st.write("Response status:", row["response_status"], "· Score status:", row["score_status"] or "not scored")
+            st.write(f"Response: {row['response_status']} · Score: {row['score_status'] or 'not scored'}")
+            if type(row["correct"]) is bool:
+                st.write("Objective score: " + ("Correct" if row["correct"] else "Incorrect"))
+            elif row["score_status"] == "review":
+                st.info("Needs human review · not an objective correctness score.")
+            elif row["score_status"] == "invalid":
+                st.warning("Invalid answer · not an objective correctness score.")
             if row["error"]:
                 st.warning("A request failure was saved for this item; inspect local logs for details.")
             if row["scorer"] in PROXY:
