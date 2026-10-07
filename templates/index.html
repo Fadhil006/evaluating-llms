@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Evaluation Studio · Local evidence</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="masthead">
+    <div class="shell masthead-inner">
+      <a class="wordmark" href="/" aria-label="Evaluation Studio home"><span class="brand-icon" aria-hidden="true">◈</span> EVAL<span class="wordmark-light">/STUDIO</span></a>
+      <span class="local-tag">LOCAL WORKBENCH <span aria-hidden="true">●</span></span>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="shell hero-inner">
+        <div>
+          <p class="eyebrow light">Evidence, not a leaderboard <span class="eyebrow-line" aria-hidden="true"></span> 01 / 03</p>
+          <h1 id="hero-title">See the answer.<br><em>Understand the check.</em></h1>
+          <p class="hero-description">Compare two models on the same project-authored questions. Keep the prompt, saved answer, and scoring decision together, with missing results in plain sight.</p>
+        </div>
+        <aside class="hero-note" aria-label="Evidence status">
+          <span class="note-marker" aria-hidden="true">✳</span>
+          <p class="note-label">CURRENT EVIDENCE</p>
+          <strong>Measured results pending.</strong>
+          <p>Offline fixtures are synthetic examples, not measured model performance. A saved live record is evidence of that run only—not a general model ranking.</p>
+        </aside>
+      </div>
+    </section>
+
+    <div class="shell content">
+      {% if notice %}<div class="message success" role="status"><strong>Update</strong><span>{{ notice }}</span></div>{% endif %}
+      {% if error %}<div class="message danger" role="alert"><strong>Attention</strong><span>{{ error }}</span></div>{% endif %}
+      {% if busy %}<div class="message caution" role="status"><strong>Run in progress</strong><span>Another submission is being handled. Reading saved runs is still safe; please wait before starting another comparison.</span></div>{% endif %}
+
+      <section class="demo-invitation" aria-labelledby="demo-title">
+        <div><p class="eyebrow">START HERE · NO PROVIDER REQUESTS</p><h2 id="demo-title">Try the offline example<span class="period">.</span></h2><p>Explore four synthetic development answers and their saved checks. This creates a local practice run; it does not measure a model or contact a provider.</p></div>
+        <form method="post" action="/demo">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="submission_nonce" value="{{ submission_nonce }}">
+          <button class="button demo-button" type="submit" {% if busy %}disabled aria-disabled="true"{% endif %}>Create synthetic demo <span aria-hidden="true">↗</span></button>
+        </form>
+      </section>
+
+      <section class="section setup" aria-labelledby="setup-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">01 / SETUP</p><h2 id="setup-title">Start a comparison<span class="period">.</span></h2></div>
+          <p>Both models receive the same questions. No provider request starts until you confirm and submit.</p>
+        </div>
+        <div class="setup-layout">
+          <div class="panel form-panel">
+            <form method="post" action="/runs" aria-describedby="form-help">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="submission_nonce" value="{{ submission_nonce }}">
+              <div class="form-grid">
+                <div class="field"><label for="dataset">Question set</label><select id="dataset" name="dataset" required aria-describedby="dataset-help"><option value="" disabled selected>Choose a dataset</option>{% for dataset in datasets %}<option value="{{ dataset.id }}">{{ dataset.label }}</option>{% endfor %}</select><small id="dataset-help">Start with development: 4 questions. Held-out: 24 questions.</small></div>
+                <div class="field"><label for="backend">Connection</label><select id="backend" name="backend" required aria-describedby="backend-help"><option value="" disabled selected>Choose a backend</option>{% for name in backends %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select><small id="backend-help">Choose models offered by the same connection below.</small></div>
+                <div class="field"><label for="model-a">Model A · exact ID</label><input id="model-a" name="model_a" list="model-options" required autocomplete="off" placeholder="provider/model-id" aria-describedby="models-help"></div>
+                <div class="field"><label for="model-b">Model B · exact ID</label><input id="model-b" name="model_b" list="model-options" required autocomplete="off" placeholder="provider/other-model-id" aria-describedby="models-help"></div>
+                <datalist id="model-options">{% for name, choices in backends.items() %}{% for choice in choices %}<option value="{{ choice.id }}" label="{{ name }} · {{ choice.label }}"></option>{% endfor %}{% endfor %}</datalist>
+                <p class="field-hint" id="models-help">Enter two different exact IDs from the chosen connection. Suggestions may include models from both connections; the server checks the selected pair before running.</p>
+                <div class="field"><label for="run-name">Local run name</label><input id="run-name" name="run_name" type="text" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="pilot-dev" aria-describedby="name-help"><small id="name-help">1–64 letters, numbers, dashes or underscores. Reusing a name must match its frozen setup.</small></div>
+                <div class="field"><label for="max-requests">Shared attempt cap</label><input id="max-requests" name="max_requests" type="number" required min="1" max="50" value="8" inputmode="numeric" aria-describedby="cap-help"><small id="cap-help">Across both models, including earlier attempts and retries. Dev needs 8; held-out needs 48 before retries. A lower cap leaves a partial run.</small></div>
+              </div>
+              <div class="consent"><input id="confirmed" name="confirmed" type="checkbox" value="on" required><label for="confirmed">I confirm outbound requests to both models, up to the shared cumulative cap. I have checked my provider account and understand that “free” model labels do not guarantee zero charges.</label></div>
+              <p class="form-footnote" id="form-help">OpenRouter checks local access and quota before starting. OpenCode uses your existing login and has no verified spend-cap check. An uncertain request may reach a provider even without a saved answer; inspect attempts before retrying.</p>
+              <button class="button primary" type="submit" {% if busy %}disabled aria-disabled="true"{% endif %}>Check access &amp; start comparison <span aria-hidden="true">↗</span></button>
+            </form>
+          </div>
+          <aside class="method-card" aria-labelledby="method-title"><span class="method-symbol" aria-hidden="true">↳</span><p class="eyebrow">THE METHOD</p><h3 id="method-title">Same questions.<br>Visible decisions.</h3><ol><li>Send each question to both models.</li><li>Save the raw responses and any errors.</li><li>Apply the declared checks.</li><li>Compare only shared, objectively scored items.</li></ol><p>Code and summary checks are proxies: they still need human review.</p></aside>
+        </div>
+      </section>
+
+      <section class="section archive" aria-labelledby="archive-title">
+        <div class="section-heading"><div><p class="eyebrow">02 / ARCHIVE</p><h2 id="archive-title">Saved runs<span class="period">.</span></h2></div><p>Opening a record or downloading its CSV never contacts a provider.</p></div>
+        {% if runs %}
+        <nav class="run-list" aria-label="Saved runs">{% for run in runs %}
+          <a class="run-link {% if selected and selected.id == run.id %}active{% endif %}" href="/?run={{ run.id | urlencode }}" {% if selected and selected.id == run.id %}aria-current="page"{% endif %}>
+            <span class="run-index">{{ '%02d' | format(loop.index) }}</span><span class="run-label"><strong>{{ run.id }}</strong><small>{% if run.config.synthetic is sameas true or run.summary.synthetic is sameas true %}Synthetic example · no provider requests{% elif run.config.synthetic is sameas false and run.summary.synthetic is sameas false %}Saved live record · not independently verified{% else %}Evidence type unverified{% endif %} · {{ run.config.dataset_version | default('Dataset not recorded', true) }}</small></span><span class="run-arrow" aria-hidden="true">↗</span>
+          </a>{% endfor %}</nav>
+        {% else %}<div class="empty-state"><span aria-hidden="true">◎</span><p>No saved runs yet. Set up a live comparison above, or inspect an offline fixture created locally with the CLI.</p></div>{% endif %}
+      </section>
+
+      {% if selected %}
+      {% set config = selected.config %}{% set summary = selected.summary %}{% set run_models = config.models | default(models | default([], true), true) %}
+      {% set synthetic = config.synthetic is sameas true or summary.synthetic is sameas true %}
+      {% set live = config.synthetic is sameas false and summary.synthetic is sameas false %}
+      <section class="section results" aria-labelledby="results-title">
+        <div class="section-heading results-heading"><div><p class="eyebrow">03 / EVIDENCE RECORD</p><h2 id="results-title">{{ selected.id }}<span class="period">.</span></h2></div><a class="button secondary" href="/runs/{{ selected.id | urlencode }}/results.csv">Download answer CSV <span aria-hidden="true">↓</span></a></div>
+        <div class="evidence-banner {% if synthetic %}synthetic{% elif live %}live{% else %}unverified{% endif %}"><strong>{% if synthetic %}Synthetic example{% elif live %}Saved live record{% else %}Evidence type unverified{% endif %}</strong><span>{% if synthetic %}Typed fixture answers. Do not interpret as measured model performance.{% elif live and selected['responses'] %}Results describe saved responses in this run only; no independent verification or overall ranking.{% elif live %}No measured comparison is available yet.{% else %}Check local run metadata before interpreting these results.{% endif %}</span></div>
+        {% if live and not selected['responses'] %}<div class="message caution no-responses" role="status"><strong>No model responses are saved.</strong><span>An attempted request may still have reached the provider. Inspect local attempts and your provider account before trying again. This run has no measured comparison.</span></div>{% endif %}
+        <details class="panel provenance"><summary>Frozen setup &amp; provenance</summary><dl><div><dt>Run ID</dt><dd>{{ selected.id }}</dd></div><div><dt>Source</dt><dd>{{ summary.source | default(config.source | default('Not recorded', true), true) }}</dd></div><div><dt>Dataset version</dt><dd>{{ config.dataset_version | default('Not recorded', true) }}</dd></div><div><dt>Dataset hash</dt><dd>{{ config.dataset_hash | default('Not recorded', true) }}</dd></div><div><dt>Created</dt><dd>{{ config.created_at | default('Not recorded', true) }}</dd></div><div><dt>Model order</dt><dd>{% for model in run_models %}{{ model }}{% if not loop.last %} → {% endif %}{% else %}Not recorded{% endfor %}</dd></div></dl><p>These values and the dataset snapshot were saved with the run. Viewing this page does not rerun the evaluation.</p></details>
+
+        <div class="subheading"><div><p class="eyebrow">COVERAGE</p><h3>What was saved</h3></div><p>Only objective scores count toward correct / scored. Missing, failed, invalid, and review outcomes are not wrong answers.</p></div>
+        <div class="model-grid">{% for model in run_models %}{% set counts = summary.models.get(model, {}) if summary.models is mapping else {} %}<article class="panel model-card"><p class="card-overline">MODEL {{ loop.index }}</p><h4>{{ model }}</h4><div class="big-number">{% if counts.scored %}{{ counts.correct | default(0) }}<span> / {{ counts.scored }}</span>{% else %}—{% endif %}</div><p class="number-label">Correct / objectively scored</p><dl class="stat-list"><div><dt>Answers saved</dt><dd>{{ counts.answered | default(0) }} / {{ counts.total | default(selected['items'] | length) }}</dd></div><div><dt>Needs human review</dt><dd>{{ counts.review | default(0) }}</dd></div><div><dt>Invalid · failed · truncated</dt><dd>{{ counts.invalid | default(0) }} · {{ counts.failures | default(0) }} · {{ counts.truncated | default(0) }}</dd></div><div><dt>Pending</dt><dd>{{ counts.pending | default(0) }}</dd></div></dl></article>{% else %}<p>No model counts recorded.</p>{% endfor %}</div>
+
+        {% set comparison = summary.matched_comparison | default({}, true) %}
+        <div class="panel comparison"><div><p class="eyebrow">SAME-ITEM COMPARISON</p><h3>Only shared scores count.</h3><p>{{ comparison.matched_questions | default(0) }} item(s) objectively scored for both models. No model ranking is inferred.</p></div><div class="comparison-values">{% for model in run_models %}{% set matched = comparison.models.get(model, {}) if comparison.models is mapping else {} %}<div><span>{{ model }}</span><strong>{% if comparison.matched_questions %}{{ matched.correct | default(0) }} / {{ comparison.matched_questions }}{% else %}—{% endif %}</strong></div>{% endfor %}</div></div>
+
+        <div class="subheading"><div><p class="eyebrow">REWORDING</p><h3>Original &amp; paraphrase</h3></div><p>Paired figures include only pairs with objective scores for both versions. Review or missing halves cannot establish an accuracy change.</p></div>
+        <div class="pair-grid">{% for model in run_models %}{% set counts = summary.models.get(model, {}) if summary.models is mapping else {} %}{% set pairs = counts.pairs | default({}, true) %}<article class="panel pair-card"><h4>{{ model }}</h4>{% if pairs %}<p><strong>{{ pairs.complete | default(0) }} / {{ pairs.planned | default(0) }}</strong> complete scored pairs</p><dl class="stat-list"><div><dt>Original correct</dt><dd>{{ pairs.original_correct | default(0) }} / {{ pairs.complete | default(0) }}</dd></div><div><dt>Paraphrase correct</dt><dd>{{ pairs.variant_correct | default(0) }} / {{ pairs.complete | default(0) }}</dd></div><div><dt>Original − paraphrase</dt><dd>{% if pairs.original_minus_variant_pp is not none and pairs.original_minus_variant_pp is defined %}{{ '%+.1f' | format(pairs.original_minus_variant_pp) }} pp{% else %}—{% endif %}</dd></div></dl>{% else %}<p>No paired summary saved.</p>{% endif %}</article>{% endfor %}</div>
+
+        <div class="subheading item-heading"><div><p class="eyebrow">QUESTION RECORDS</p><h3>Follow each answer.</h3></div><p>Open a question to inspect its original or paraphrased wording, reference, raw response, status, and saved scoring decision.</p></div>
+        {% for item in selected['items'] %}
+        <details class="panel item"><summary><span class="item-id">{{ item.id }}</span><span class="item-title"><strong>{{ item.category | default('Question', true) }}</strong><small>{{ item.variant | default('Variant not recorded', true) }} · pair {{ item.pair_id | default('not recorded', true) }}</small></span><span class="item-toggle" aria-hidden="true">+</span></summary>
+          <div class="item-body"><div class="question-info"><div><p class="detail-label">DATASET QUESTION</p><p class="verbatim">{{ item.prompt | default('Not recorded', true) }}</p></div><div><p class="detail-label">REFERENCE ANSWER</p><p class="verbatim">{{ item.reference_answer | default('Not recorded', true) }}</p></div><p class="rule-label">Declared scorer: <strong>{{ item.scorer | default('Not recorded', true) }}</strong>. Rules are attached to the frozen question; proxy checks may still need review.</p></div>
+          <div class="answer-grid">{% for model in run_models %}{% set record = namespace(response=none, score=none) %}{% for response in selected['responses'] %}{% if response.model == model and response.item_id == item.id and (record.response is none or response.status != 'rate_limited') %}{% set record.response = response %}{% endif %}{% endfor %}{% for score in selected['scores'] %}{% if score.model == model and score.item_id == item.id %}{% set record.score = score %}{% endif %}{% endfor %}
+            <article class="answer"><h4>{{ model }}</h4><p class="answer-state">{% if record.response is none %}Pending · no saved answer{% elif record.response.status == 'rate_limited' %}Rate limited · no saved answer{% elif record.response.status == 'truncated' or record.response.finish_reason == 'length' %}Truncated · no objective score{% elif record.response.status != 'ok' %}Request failed · no objective score{% elif record.score and record.score.status == 'scored' and record.score.correct is sameas true %}Correct · objective score{% elif record.score and record.score.status == 'scored' and record.score.correct is sameas false %}Incorrect · objective score{% elif record.score and record.score.status == 'review' %}Needs human review · no objective score{% else %}Invalid or unscored · no objective score{% endif %}</p>
+              <p class="detail-label">SAVED RAW ANSWER</p><pre class="verbatim">{{ record.response.raw_answer | default('No saved answer', true) if record.response else 'No saved answer' }}</pre>
+              {% if record.response and record.response.error %}<p class="detail-label">REQUEST ERROR</p><pre class="verbatim">{{ record.response.error }}</pre>{% endif %}
+              {% if record.score and record.score.explanation %}<p class="detail-label">SCORING EXPLANATION</p><p class="verbatim">{{ record.score.explanation }}</p>{% endif %}
+              <p class="answer-meta">Response: {{ record.response.status | default('pending', true) if record.response else 'pending' }} · Score: {{ record.score.status | default('not scored', true) if record.score else 'not scored' }} · Latency: {% if record.response and record.response.latency_ms is not none and record.response.latency_ms is defined %}{{ record.response.latency_ms }} ms{% else %}not recorded{% endif %}</p>
+            </article>{% endfor %}</div></div>
+        </details>
+        {% else %}<div class="empty-state"><p>No questions saved in this run.</p></div>{% endfor %}
+      </section>
+      {% endif %}
+    </div>
+  </main>
+  <footer class="footer"><div class="shell"><span>EVAL / STUDIO</span><p>Local records · project-authored questions · no claims beyond saved evidence.</p></div></footer>
+</body>
+</html>

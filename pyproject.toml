@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-ui = ["streamlit"]
+ui = ["Flask"]
 
 [tool.setuptools]
 packages = ["evaluation"]

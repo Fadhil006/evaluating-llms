@@ -1,6 +1,6 @@
 # Evaluating Large Language Models
 
-An evaluation framework for controlled, reproducible comparisons on project-authored question sets. It provides validated development/held-out datasets, synthetic offline fixtures, explicit opt-in live execution, deterministic/proxy scoring, saved run records, paraphrase analysis, a Streamlit dashboard, a CLI, history, and CSV export. It is not a generic chatbot.
+An evaluation framework for controlled, reproducible comparisons on project-authored question sets. It provides validated development/held-out datasets, synthetic offline fixtures, explicit opt-in live execution, deterministic/proxy scoring, saved run records, paraphrase analysis, a local-only Flask dashboard, a CLI, history, and CSV export. It is not a generic chatbot.
 
 **Measured results pending.** Existing offline runs are synthetic fixtures, not actual model outputs. The repository currently contains no completed successful live comparison, so it makes no measured accuracy, latency, or model-winner claim. See [`protocol.md`](protocol.md) for the implemented evaluation rules and limitations.
 
@@ -15,7 +15,7 @@ The datasets cover reasoning, mathematics, coding, knowledge, summarization, and
 | Qwen 3.8 27B | `qwen/qwen3.8-27b:free` |
 | Cohere North Mini Code | `cohere/north-mini-code:free` |
 
-Catalog listings are **not endpoint tests**. Confirm endpoint availability, routing, supported settings, quotas, and billing before live requests. Fixed IDs do not guarantee immutable hosted weights. The live CLI runs one model per run; Streamlit compares exactly two models. The OpenCode route has different controls and is not provider-equivalent to OpenRouter.
+Catalog listings are **not endpoint tests**. Confirm endpoint availability, routing, supported settings, quotas, and billing before live requests. Fixed IDs do not guarantee immutable hosted weights. The live CLI runs one model per run; the local dashboard compares exactly two models. The OpenCode route has different controls and is not provider-equivalent to OpenRouter.
 
 Official catalog links: [Nemotron](https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free), [Gemma](https://openrouter.ai/google/gemma-4-31b-it:free), [Qwen](https://openrouter.ai/qwen/qwen3.8-27b:free), [Cohere](https://openrouter.ai/cohere/north-mini-code:free); [public model catalog API](https://openrouter.ai/api/v1/models). Catalog metadata is time-dependent; these links do not establish successful generation requests.
 
@@ -40,18 +40,18 @@ python -m json.tool runs/dev-synthetic/summary.json
 python -m unittest discover -s tests
 ```
 
-Optional local control panel and saved-results viewer (third-party dependency, not needed for the CLI):
+Optional local-only Flask dashboard and saved-results viewer (third-party dependency, not needed for the CLI; no deployment):
 
 ```sh
 python -m pip install '.[ui]'
-streamlit run app.py
+python app.py
 ```
 
-For a first visit, click **Try offline demo**. The page scrolls to a five-step walkthrough of one saved answer; it advances through the question, response, reference, check, and decision. Use **Pause** or **Restart** to control it. The demo is synthetic and sends no provider requests.
+Open `http://127.0.0.1:8501` on the same machine. The offline demo uses synthetic answers and sends no provider requests.
 
-Choose a dev or held-out dataset, **two different** pinned free-model routes, a shared cumulative request cap (up to 50 attempts), and a local run name. The dev set needs 8 requests for both models; the held-out set needs 48, excluding retries. A smaller cap leaves the comparison partial. The form sends no model requests until you confirm and click; it checks your key's free quota first. A key confirmed by OpenRouter as free-tier may have no spending cap; a paid or unverified account requires a positive finite key spending cap. During a live run, the page shows the latest saved response, progress, reference answer, and scoring explanation; the saved-run viewer retains the full history. Unlike the CLI, the UI can read the ignored project `.env` directly (mode 600), or use an exported `OPENROUTER_API_KEY`. Switching saved runs and downloading an answer-level CSV never sends provider requests. Fixture outputs are synthetic and cannot establish real model accuracy or latency. The comparison shows only questions with objective scores for both models; review, invalid, failed, and pending items remain separate. Reusing a run name requires the same model order, provider routes, and dataset; the quota check currently requires enough remaining quota for the **full selected cap** even on resume.
+Choose a dev or held-out dataset, **two different** pinned free-model routes, a shared cumulative request cap (up to 50 attempts), and a local run name. The dev set needs 8 requests for both models; the held-out set needs 48, excluding retries. A smaller cap leaves the comparison partial. Live requests require explicit confirmation and an access check; a paid or unverified OpenRouter account requires a positive finite key spending cap. The dashboard can use an exported `OPENROUTER_API_KEY` or the ignored local `.env` (mode 600). Browsing saved runs and downloading CSV does not make provider requests. Fixture outputs cannot establish real model accuracy or latency. Only shared objectively scored items enter the matched comparison; review, invalid, failed, and pending items remain separate. Reusing a run name requires the same model order, provider routes, and dataset; the quota check requires enough remaining quota for the **full selected cap** even on resume.
 
-The website also offers **OpenCode (free-labeled)** for two configured OpenCode models when OpenRouter key limits are unavailable. This uses your installed OpenCode CLI and its existing provider login instead of the OpenRouter key check. The same two-model dataset, shared attempt cap, saved-answer progress, and explicit confirmation apply. It disables agent tool permissions for evaluation prompts and saves OpenCode results in separate run directories; do not reuse a run name from an OpenRouter comparison. A model's “free” label is **not a billing guarantee**: OpenCode has no verified spend-cap preflight here, so check provider/account terms yourself before confirming outbound requests. Timeouts or uncertain CLI failures pause the run for manual inspection; they are never retried automatically.
+The dashboard also offers **OpenCode (free-labeled)** for two configured OpenCode models. This uses your installed OpenCode CLI and its existing provider login instead of an OpenRouter key. Do not reuse an OpenRouter run name. A model's “free” label is **not a billing guarantee**: OpenCode has no verified spend-cap preflight here, so check provider/account terms yourself before confirming outbound requests. Timeouts or uncertain CLI failures pause the run for manual inspection; they are never retried automatically.
 
 ## Opt-in live run
 
@@ -73,7 +73,7 @@ Only after inspecting that separate dev run and confirming quota/route again, op
 python -m evaluation --live --dataset datasets/v1.0/benchmark.jsonl --run-dir runs/gemma-benchmark-live --model google/gemma-4-31b-it:free --provider google-ai-studio --max-requests 24
 ```
 
-The live **CLI** still handles one model per run (`--max-requests` up to 40); the **website** can compare two models in one saved run (shared cap up to 50). Attempts count cumulatively, including retries, not per invocation. HTTP 429 stops the run; unresolved attempts require manual inspection of saved logs and provider state before any retry, never automatic redispatch. The 12 base pairs are exploratory, not a robust leaderboard; coding and summarization checks are proxies only, not functional correctness scores. **Measured results are pending.** See [`protocol.md`](protocol.md) for the implemented protocol.
+The live **CLI** still handles one model per run (`--max-requests` up to 40); the local dashboard can compare two models in one saved run (shared cap up to 50). Attempts count cumulatively, including retries, not per invocation. HTTP 429 stops the run; unresolved attempts require manual inspection of saved logs and provider state before any retry, never automatic redispatch. The 12 base pairs are exploratory, not a robust leaderboard; coding and summarization checks are proxies only, not functional correctness scores. **Measured results are pending.** See [`protocol.md`](protocol.md) for the implemented protocol.
 
 # References
 

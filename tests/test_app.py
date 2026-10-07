@@ -1,515 +1,323 @@
-"""Offline Streamlit smoke checks against an isolated copy of the dashboard."""
+"""Offline HTTP contract checks for the localhost-only Flask dashboard."""
 
 import json
-import shutil
-import sys
+from concurrent.futures import ThreadPoolExecutor
+import re
 import tempfile
-import types
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 try:
-    from streamlit.testing.v1 import AppTest
-    from app import attention_matches, joined_rows, matched_comparison, plain_check_summary, plain_rule_summary, run_feedback, safe_run_path, tally
-except ImportError:  # Optional UI dependency is not required for the core CLI.
-    AppTest = None
+    import app as dashboard
+except ImportError:  # The optional Flask UI is not required for the CLI.
+    dashboard = None
+
 from evaluation.runner import run
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ROUTER_A = "nvidia/nemotron-3-ultra-550b-a55b:free"
+ROUTER_B = "google/gemma-4-31b-it:free"
+CODE_A = "opencode/ling-3.1-flash-free"
+CODE_B = "opencode/nemotron-3-ultra-free"
 
 
-def submit(page):
-    return next(button for button in page.button if button.label in
-                ("Start comparison", "Check access & start comparison")).click().run()
-
-
-@unittest.skipUnless(AppTest is not None, "install .[ui] to test the dashboard")
+@unittest.skipUnless(dashboard is not None and hasattr(dashboard, "app"), "install .[ui] for Flask dashboard tests")
 class DashboardTests(unittest.TestCase):
-    def test_saved_checks_have_plain_language_explanations(self):
-        self.assertIn("one clear letter", plain_rule_summary({"scorer": "mcq"}))
-        self.assertIn("0.5", plain_rule_summary({"scorer": "numeric", "rules": {"tolerance": 0.5}}))
-        self.assertIn("status=ok", plain_rule_summary({"scorer": "instruction_rules",
-                        "rules": {"required_json_values": {"status": "ok"}}}))
-        choice = plain_check_summary({"scorer": "mcq", "checks": {"choice": "B"},
-                                      "reference_answer": "B", "correct": True})
-        self.assertIn("read the letter B", choice)
-        self.assertIn("They match", choice)
-        number = plain_check_summary({"scorer": "numeric", "checks": {"value": 7.0,
-                                      "tolerance": 0.0001, "within_tolerance": True},
-                                      "reference_answer": "7"})
-        self.assertIn("allowed difference", number)
-        review = plain_check_summary({"scorer": "code_syntax", "checks": {"syntax_valid": True,
-                                      "function_name": True, "signature": False}})
-        self.assertIn("person must judge", review)
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.runs = Path(self.temp.name) / "runs"
+        self.runs.mkdir()
+        self.root_patch = patch.object(dashboard, "RUNS", self.runs)
+        self.root_patch.start()
+        self.addCleanup(self.root_patch.stop)
+        old_config = {key: dashboard.app.config[key] for key in ("TESTING", "SERVER_NAME")}
+        self.addCleanup(dashboard.app.config.update, old_config)
+        dashboard.app.config.update(TESTING=True, SERVER_NAME="127.0.0.1:8501")
+        self.client = dashboard.app.test_client()
 
-    def test_run_name_cannot_escape_runs(self):
-        for name in ("../outside", "/tmp/outside", "a/b", ".hidden", "a\\b", "a b"):
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                safe_run_path(name)
+    def wait_for_worker(self, done):
+        self.assertTrue(done.wait(3), "background worker did not invoke mocked runner")
+        self.assertTrue(dashboard.worker_lock.acquire(timeout=3), "background worker did not finish")
+        dashboard.worker_lock.release()
 
-    def test_live_control_requires_confirmation_and_preflight(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            app = home / "app.py"
-            shutil.copyfile(ROOT / "app.py", app)
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock(return_value={"allowed": True})
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_live_comparison", create=True,
-                    return_value={"paused": False, "models": {}}) as live:
-                page = AppTest.from_file(str(app)).run()
-                self.assertFalse(page.exception)
-                self.assertTrue(any("START HERE" in caption.value for caption in page.caption))
-                self.assertTrue(any("Evaluation steps" in note.value and "Saved raw response" in note.value
-                                    and "Declared scorer" in note.value for note in page.markdown))
-                self.assertTrue(any("project-authored dataset" in caption.value.lower() for caption in page.caption))
-                for citation in ("10.1145/3641289", "2504.18838", "2508.15361", "2507.21504"):
-                    self.assertTrue(any(citation in note.value for note in page.markdown), citation)
-                self.assertEqual(page.button[0].label, "Try offline demo")
-                self.assertTrue(any("offline demo" in note.value.lower() for note in page.markdown))
-                cap_input = next(box for box in page.number_input if box.label == "Total attempt cap for both models")
-                self.assertIn("earlier attempts and retries count", cap_input.help)
-                self.assertEqual(cap_input.max, 50)
-                self.assertIn("shared cap", page.checkbox[0].label)
-                self.assertIn("two models", page.text_input[0].help)
-                self.assertTrue(any("4 questions × 2 models = 8" in caption.value for caption in page.caption))
-                access.preflight.assert_not_called()
-                live.assert_not_called()
+    def form(self, client=None, **changes):
+        page = (client or self.client).get("/")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        fields = {}
+        for name in ("csrf_token", "submission_nonce"):
+            match = re.search(r'<input\b(?=[^>]*\bname=["\']' + name +
+                              r'["\'])(?=[^>]*\bvalue=["\']([^"\']+)["\'])[^>]*>', html)
+            self.assertIsNotNone(match, f"missing {name} hidden field")
+            fields[name] = match.group(1)
+        fields.update(dataset="dev.jsonl", backend="OpenRouter", model_a=ROUTER_A,
+                      model_b=ROUTER_B, run_name="pilot", max_requests="8", confirmed="on")
+        fields.update(changes)
+        return fields
 
-                page = submit(page)
-                self.assertFalse(page.exception)
-                access.preflight.assert_not_called()
-                live.assert_not_called()
+    def save_run(self, name="sample", models=None):
+        models = models or ["fixture-a", "fixture-b"]
+        fixtures = self.runs / "fixtures.json"
+        fixtures.write_text(json.dumps({model: {"dr1-o": "B", "dr1-p": "B",
+                                                       "dm1-o": "7", "dm1-p": "7"}
+                                        for model in models}), encoding="utf-8")
+        folder = self.runs / name
+        run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, folder, models)
+        return folder
 
-                page.checkbox[0].check()
-                next(box for box in page.selectbox if box.label == "Second free model / pinned route").set_value(
-                    "nvidia/nemotron-3-ultra-550b-a55b:free")
-                page = submit(page)
-                self.assertTrue(any("two different models" in error.value for error in page.error))
-                access.preflight.assert_not_called()
-                live.assert_not_called()
+    def test_get_is_read_only_and_exposes_controls(self):
+        with patch("evaluation.access.preflight") as preflight, patch(
+                "evaluation.runner.run_live_comparison") as router, patch(
+                "evaluation.runner.run_opencode_comparison") as code:
+            page = self.client.get("/")
+            self.assertEqual(page.status_code, 200)
+            text = page.get_data(as_text=True)
+            for field in ("dataset", "backend", "model_a", "model_b", "run_name",
+                          "max_requests", "confirmed", "csrf_token", "submission_nonce"):
+                self.assertIn(f'name="{field}"', text)
+            self.assertIn("demo", text.lower())
+            preflight.assert_not_called()
+            router.assert_not_called()
+            code.assert_not_called()
 
-                next(box for box in page.selectbox if box.label == "Second free model / pinned route").set_value(
-                    "google/gemma-4-31b-it:free")
-                page.checkbox[0].check()
-                next(box for box in page.text_input if box.label == "Local run name").set_value("../outside")
-                page = submit(page)
-                self.assertFalse(page.exception)
-                access.preflight.assert_not_called()
-                live.assert_not_called()
+    def test_rejected_submissions_never_check_access_or_dispatch(self):
+        with patch("evaluation.access.preflight") as preflight, patch(
+                "evaluation.runner.run_live_comparison") as router, patch(
+                "evaluation.runner.run_opencode_comparison") as code:
+            for changes in ({"confirmed": ""}, {"model_b": ROUTER_A},
+                            {"model_a": "unknown/free:free"}, {"dataset": "../dev.jsonl"},
+                            {"run_name": "../escape"}, {"max_requests": "51"},
+                            {"backend": "unexpected"}, {"model_a": CODE_A}, {"csrf_token": ""},
+                            {"csrf_token": "wrong"}, {"submission_nonce": ""},
+                            {"submission_nonce": "wrong"}):
+                with self.subTest(changes=changes):
+                    response = self.client.post("/runs", data=self.form(**changes))
+                    self.assertEqual(response.status_code, 403 if changes.get("csrf_token") in ("", "wrong") or
+                                     changes.get("submission_nonce") in ("", "wrong") else 302)
+            preflight.assert_not_called()
+            router.assert_not_called()
+            code.assert_not_called()
 
-                page.checkbox[0].check()
-                next(box for box in page.text_input if box.label == "Local run name").set_value("my-dev")
-                access.preflight.side_effect = ValueError("SECRET MUST NOT APPEAR")
-                page = submit(page)
-                self.assertFalse(page.exception)
-                self.assertFalse(any("SECRET" in error.value for error in page.error))
-                self.assertTrue(any("Paid or unverified accounts" in error.value for error in page.error))
-                live.assert_not_called()
+    def test_router_preflight_precedes_dispatch_and_nonce_prevents_replay(self):
+        calls = []
+        done = threading.Event()
 
-                access.preflight.side_effect = None
-                access.preflight.return_value = {"allowed": False}
-                page.checkbox[0].check()
-                page = submit(page)
-                live.assert_not_called()
+        def check(**kwargs):
+            calls.append("preflight")
+            return {"allowed": True, "free_remaining": 50, "api_key": "SECRET MUST NOT APPEAR"}
 
-                access.preflight.return_value = {"free_remaining": 10, "free_limit": 50,
-                                                 "spend_limit": 5, "spend_remaining": 4,
-                                                 "api_key": "SECRET MUST NOT APPEAR"}
-                page.checkbox[0].check()
-                next(box for box in page.selectbox if box.label == "Dataset").set_value("benchmark.jsonl")
-                next(box for box in page.selectbox if box.label == "First free model / pinned route").set_value(
-                    "qwen/qwen3.8-27b:free")
-                next(box for box in page.number_input if box.label == "Total attempt cap for both models").set_value(3)
-                page = submit(page)
-                self.assertFalse(page.exception)
-                access.preflight.assert_called_with(max_requests=3)
-                live.assert_called_once()
-                args, kwargs = live.call_args
-                self.assertEqual(args, (home / "datasets/v1.0/benchmark.jsonl", home / "runs/my-dev",
-                                        ["qwen/qwen3.8-27b:free", "google/gemma-4-31b-it:free"],
-                                        {"qwen/qwen3.8-27b:free": "modelrun/fp4",
-                                         "google/gemma-4-31b-it:free": "google-ai-studio"}, 3))
-                self.assertTrue(callable(kwargs["on_progress"]))
-                self.assertFalse(any(heading.value == "Latest saved response" for heading in page.subheader))
-                self.assertTrue(any("24 questions × 2 models = 48" in caption.value and "partial" in caption.value
-                                    for caption in page.caption))
-                self.assertTrue(any("Free requests remaining: 10" in caption.value for caption in page.caption))
-                self.assertFalse(any("SECRET" in caption.value for caption in page.caption))
-                self.assertTrue(any("shared cap 3 attempts for both models, including prior attempts" in message.value
-                                    for message in page.success))
-                self.assertEqual(page.session_state["selected_run"], "my-dev")
-                page.run()
-                live.assert_called_once()
+        def dispatch(*args, **kwargs):
+            calls.append("dispatch")
+            done.set()
+            return {"paused": False, "models": {}}
 
-    def test_opencode_requires_confirmation_and_shows_saved_scoring_without_preflight(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            shutil.copyfile(ROOT / "app.py", home / "app.py")
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock(side_effect=AssertionError("OpenCode must not check OpenRouter access"))
-            first, second = "opencode/ling-3.1-flash-free", "opencode/nemotron-3-ultra-free"
+        data = self.form(run_name="live-router", max_requests="3")
+        with patch("evaluation.access.preflight", side_effect=check) as preflight, patch(
+                "evaluation.runner.run_live_comparison", side_effect=dispatch) as router, patch(
+                "evaluation.runner.run_opencode_comparison") as code:
+            response = self.client.post("/runs", data=data)
+            self.assertEqual(response.status_code, 302)
+            self.wait_for_worker(done)
+            self.assertEqual(calls, ["preflight", "dispatch"])
+            preflight.assert_called_once_with(max_requests=3)
+            args, kwargs = router.call_args
+            self.assertEqual(args, (ROOT / "datasets/v1.0/dev.jsonl", self.runs / "live-router",
+                                    [ROUTER_A, ROUTER_B],
+                                    {ROUTER_A: "nvidia", ROUTER_B: "google-ai-studio"}, 3))
+            self.assertTrue(callable(kwargs["on_progress"]))
+            replay = self.client.post("/runs", data=data)
+            self.assertEqual(replay.status_code, 403)
+            self.assertEqual(calls, ["preflight", "dispatch"])
+            code.assert_not_called()
 
-            def save_one(*args, on_progress):
-                on_progress({"model": first, "item_id": "dr1-o", "prompt": "Who is older?",
-                             "reference_answer": "B", "answer": "B", "status": "ok",
-                             "score_status": "scored", "correct": True, "explanation": "Choice matches reference.",
-                             "completed": 1, "planned": 8, "attempts": 1,
-                             "raw_payload": "SECRET MUST NOT APPEAR"})
-                return {"paused": True, "models": {first: {"answered": 1, "total": 4, "pending": 3},
-                                                    second: {"answered": 0, "total": 4, "pending": 4}}}
+    def test_original_signed_cookie_cannot_replay_after_worker_finishes(self):
+        done = threading.Event()
+        data = self.form(run_name="signed-replay")
+        original_cookie = self.client.get_cookie("session", domain="127.0.0.1")
+        self.assertIsNotNone(original_cookie)
+        with patch("evaluation.access.preflight", return_value={"allowed": True}) as preflight, patch(
+                "evaluation.runner.run_live_comparison", side_effect=lambda *a, **kw: done.set()) as dispatch:
+            self.assertEqual(self.client.post("/runs", data=data).status_code, 302)
+            self.wait_for_worker(done)
+            replay_client = dashboard.app.test_client()
+            replay_client.set_cookie("session", original_cookie.value, domain="127.0.0.1")
+            self.assertEqual(replay_client.post("/runs", data=data).status_code, 403)
+            preflight.assert_called_once()
+            dispatch.assert_called_once()
 
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_opencode_comparison", create=True, side_effect=save_one) as live, patch(
-                    "evaluation.runner.run_live_comparison") as router:
-                page = AppTest.from_file(str(home / "app.py")).run()
-                page = next(box for box in page.selectbox if box.label == "How will you connect?").set_value(
-                    "OpenCode (free-labeled)").run()
-                self.assertFalse(page.exception)
-                self.assertFalse(any("OpenCode model" in box.label for box in page.selectbox))
-                self.assertTrue(any("Ling 3.1 Flash + Nemotron 3 Ultra" in text.value for text in page.markdown))
-                self.assertTrue(any("billable quota" in caption.value and
-                                    "no verified spend-cap check" in caption.value for caption in page.caption))
-                self.assertIn("via OpenCode", page.checkbox[0].label)
-                self.assertFalse(any("key stays local" in caption.value.lower() for caption in page.caption))
-                self.assertFalse(any("Free requests remaining" in caption.value for caption in page.caption))
-                access.preflight.assert_not_called()
-                live.assert_not_called()
-                router.assert_not_called()
+    def test_overlapping_valid_submissions_cannot_both_preflight(self):
+        second_client = dashboard.app.test_client()
+        first = self.form(run_name="first")
+        second = self.form(second_client, run_name="second")
+        entered, release, done = threading.Event(), threading.Event(), threading.Event()
+        count_lock = threading.Lock()
+        checks = 0
 
-                page = submit(page)
-                self.assertTrue(any("Confirm outbound requests" in warning.value for warning in page.warning))
-                access.preflight.assert_not_called()
-                live.assert_not_called()
+        def slow_preflight(**kwargs):
+            nonlocal checks
+            with count_lock:
+                checks += 1
+                first_check = checks == 1
+            if first_check:
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("preflight remained blocked")
+            return {"allowed": True}
 
-                page.checkbox[0].check()
-                next(box for box in page.text_input if box.label == "Local run name").set_value("../outside")
-                page = submit(page)
-                live.assert_not_called()
-                next(box for box in page.text_input if box.label == "Local run name").set_value("opencode-dev")
-                page.checkbox[0].check()
-                page = submit(page)
-                self.assertFalse(page.exception)
-                self.assertTrue(any("unresolved attempt" in info.value for info in page.info))
-                args, kwargs = live.call_args
-                self.assertEqual(args, (home / "datasets/v1.0/dev.jsonl", home / "runs/opencode-dev",
-                                        [first, second], 8))
-                self.assertTrue(callable(kwargs["on_progress"]))
-                self.assertEqual([metric.value for metric in page.metric[:2]], ["1/8", "1"])
-                self.assertTrue(any("Ling 3.1 Flash · dr1-o" in heading.value for heading in page.subheader))
-                self.assertTrue(any("Objective score: Correct" in text.value for text in page.markdown))
-                self.assertTrue(any("Score status: scored" in caption.value for caption in page.caption))
-                self.assertTrue(any(block.value == "Choice matches reference." for block in page.code))
-                self.assertTrue(any("1/8 planned model answers saved" in getattr(progress, "text", "")
-                                    for progress in page.get("progress")))
-                self.assertFalse(any("SECRET" in str(node.value) for kind in ("markdown", "caption", "code", "warning")
-                                     for node in page.get(kind)))
-                self.assertFalse(any("Free requests remaining" in caption.value for caption in page.caption))
-                access.preflight.assert_not_called()
-                router.assert_not_called()
+        with patch("evaluation.access.preflight", side_effect=slow_preflight) as preflight, patch(
+                "evaluation.runner.run_live_comparison", side_effect=lambda *a, **kw: done.set()) as dispatch:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first_post = pool.submit(self.client.post, "/runs", data=first)
+                try:
+                    self.assertTrue(entered.wait(3), "first submission did not reach preflight")
+                    second_post = pool.submit(second_client.post, "/runs", data=second)
+                    self.assertEqual(second_post.result(timeout=3).status_code, 302)
+                finally:
+                    release.set()
+                self.assertEqual(first_post.result(timeout=3).status_code, 302)
+            self.wait_for_worker(done)
+            preflight.assert_called_once()
+            dispatch.assert_called_once()
 
-    def test_live_progress_shows_saved_answer_and_objective_score(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            shutil.copyfile(ROOT / "app.py", home / "app.py")
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock(return_value={"free_remaining": 50})
-            model = "nvidia/nemotron-3-ultra-550b-a55b:free"
-            event = {"model": model, "item_id": "dr1-o", "prompt": "Which answer is right?",
-                     "reference_answer": "B", "answer": "B", "status": "ok",
-                     "score_status": "scored", "correct": True, "explanation": "Choice matches reference.",
-                     "completed": 1, "planned": 8, "attempts": 2,
-                     "summary": {"api_key": "SECRET MUST NOT APPEAR"}, "raw_payload": "SECRET MUST NOT APPEAR"}
+    def test_denied_preflight_never_dispatches_and_hides_backend_secrets(self):
+        with patch("evaluation.access.preflight", side_effect=ValueError("SECRET MUST NOT APPEAR")), patch(
+                "evaluation.runner.run_live_comparison") as router:
+            response = self.client.post("/runs", data=self.form())
+            self.assertEqual(response.status_code, 302)
+            self.assertNotIn(b"SECRET MUST NOT APPEAR", response.data)
+            self.assertNotIn(b"SECRET MUST NOT APPEAR", self.client.get("/").data)
+            router.assert_not_called()
 
-            def save_one(*args, on_progress):
-                on_progress(event)
-                return {"paused": False, "models": {}}
+    def test_opencode_skips_router_preflight(self):
+        done = threading.Event()
 
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_live_comparison", side_effect=save_one) as live:
-                page = AppTest.from_file(str(home / "app.py")).run()
-                access.preflight.assert_not_called()
-                live.assert_not_called()
-                page.checkbox[0].check()
-                page = submit(page)
-                self.assertFalse(page.exception)
-                self.assertEqual(page.metric[0].value, "1/8")
-                self.assertEqual(page.metric[1].value, "2")
-                self.assertTrue(any("1/8 planned model answers saved" in getattr(p, "text", "")
-                                    for p in page.get("progress")))
-                self.assertTrue(any("Nemotron 3 Ultra · dr1-o" in h.value for h in page.subheader))
-                self.assertTrue(all(value in [block.value for block in page.code]
-                                    for value in ("Which answer is right?", "B", "Choice matches reference.")))
-                self.assertTrue(any("Objective score: Correct" in str(text.value) for text in page.markdown))
-                self.assertTrue(any("Score status: scored" in caption.value for caption in page.caption))
-                self.assertFalse(any("SECRET" in str(node.value) for kind in ("text", "caption", "code", "warning")
-                                     for node in page.get(kind)))
-                live.assert_called_once()
+        def dispatch(*args, **kwargs):
+            done.set()
+            return {"paused": True, "models": {}}
 
-    def test_live_progress_distinguishes_review_and_failure(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            shutil.copyfile(ROOT / "app.py", home / "app.py")
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock(return_value={"free_remaining": 50})
-            event = {"model": "google/gemma-4-31b-it:free", "item_id": "dm1-o", "prompt": "Compute 3 + 4",
-                     "reference_answer": "7", "answer": "Seven units", "status": "ok",
-                     "score_status": "review", "correct": None, "explanation": "Units need human review.",
-                     "completed": 2, "planned": 8, "attempts": 3}
+        with patch("evaluation.access.preflight") as preflight, patch(
+                "evaluation.runner.run_live_comparison") as router, patch(
+                "evaluation.runner.run_opencode_comparison", side_effect=dispatch) as code:
+            response = self.client.post("/runs", data=self.form(backend="OpenCode (free-labeled)", model_a=CODE_A,
+                                                                    model_b=CODE_B, run_name="live-code"))
+            self.assertEqual(response.status_code, 302)
+            self.wait_for_worker(done)
+            args, kwargs = code.call_args
+            self.assertEqual(args, (ROOT / "datasets/v1.0/dev.jsonl", self.runs / "live-code",
+                                    [CODE_A, CODE_B], 8))
+            self.assertTrue(callable(kwargs["on_progress"]))
+            preflight.assert_not_called()
+            router.assert_not_called()
 
-            def save_one(*args, on_progress):
-                on_progress(event)
-                return {"paused": True, "models": {}}
+    def test_saved_synthetic_and_zero_response_live_are_not_measured(self):
+        folder = self.save_run()
+        with patch("evaluation.access.preflight") as preflight, patch(
+                "evaluation.runner.run_live_comparison") as router:
+            page = self.client.get("/?run=sample")
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("SYNTHETIC", page.get_data(as_text=True).upper())
+            for filename in ("config.json", "summary.json"):
+                path = folder / filename
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record.update(synthetic=False, source="opencode_live")
+                if filename == "summary.json":
+                    for counts in record["models"].values():
+                        counts.update(correct=77, scored=88, answered=0, pending=4)
+                path.write_text(json.dumps(record), encoding="utf-8")
+            for filename in ("responses.jsonl", "scores.jsonl"):
+                (folder / filename).write_text("", encoding="utf-8")
+            page = self.client.get("/?run=sample")
+            text = page.get_data(as_text=True).lower()
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("no model responses", text)
+            self.assertNotIn('<div class="evidence-banner synthetic">', text)
+            self.assertNotIn("objective score: correct", text)
+            self.assertNotRegex(text, r'77\s*<span>\s*/\s*88\s*</span>')
+            preflight.assert_not_called()
+            router.assert_not_called()
 
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_live_comparison", side_effect=save_one):
-                page = AppTest.from_file(str(home / "app.py")).run()
-                page.checkbox[0].check()
-                page = submit(page)
-                self.assertFalse(page.exception)
-                self.assertTrue(any("Needs human review" in info.value for info in page.info))
-                self.assertTrue(any("Score status: review" in caption.value for caption in page.caption))
-                self.assertTrue(any(block.value == "Units need human review." for block in page.code))
+    def test_mismatched_dataset_hash_cannot_show_trusted_results(self):
+        folder = self.save_run()
+        config_path = folder / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["dataset_hash"] = "0" * 64
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        with patch("evaluation.access.preflight") as preflight, patch(
+                "evaluation.runner.run_live_comparison") as dispatch:
+            page = self.client.get("/?run=sample")
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("Cannot read this saved run", page.get_data(as_text=True))
+            self.assertNotIn("Correct / objectively scored", page.get_data(as_text=True))
+            self.assertEqual(self.client.get("/runs/sample/results.csv").status_code, 404)
+            preflight.assert_not_called()
+            dispatch.assert_not_called()
 
-                event.update(status="rate_limited", score_status=None, correct=None,
-                             explanation=None, answer=None, attempts=4)
-                page.checkbox[0].check()
-                page = submit(page)
-                self.assertFalse(page.exception)
-                self.assertTrue(any("Rate limited" in warning.value for warning in page.warning))
-                self.assertFalse(any("Objective score:" in str(text.value) for text in page.markdown))
+    def test_offline_demo_if_available_never_contacts_providers(self):
+        fields = self.form()
+        done = threading.Event()
 
-    def test_live_activity_keeps_each_saved_event_but_not_backend_metadata(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            shutil.copyfile(ROOT / "app.py", home / "app.py")
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock(return_value={"allowed": True})
-            model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+        def save_demo(*args, **kwargs):
+            try:
+                return run(*args, **kwargs)
+            finally:
+                done.set()
 
-            def save_two(*args, on_progress):
-                for item, status, completed, attempts in (("dr1-o", "rate_limited", 0, 1),
-                                                          ("dr1-o", "ok", 1, 2)):
-                    on_progress({"model": model, "item_id": item, "prompt": "Which?",
-                                 "reference_answer": "B", "answer": "B" if status == "ok" else None,
-                                 "status": status, "score_status": "scored" if status == "ok" else None,
-                                 "correct": True if status == "ok" else None, "completed": completed,
-                                 "planned": 8, "attempts": attempts,
-                                 "raw_payload": "SECRET MUST NOT APPEAR"})
-                return {"paused": True, "models": {}}
-
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_live_comparison", side_effect=save_two):
-                page = AppTest.from_file(str(home / "app.py")).run()
-                page.checkbox[0].check()
-                page = submit(page)
-                self.assertFalse(page.exception)
-                self.assertTrue(any("Rate limited · awaiting retry · 0/8 saved outcomes · 1 cumulative attempts"
-                                    in text.value for text in page.markdown))
-                self.assertTrue(any("Scored · correct · 1/8 saved outcomes · 2 cumulative attempts"
-                                    in text.value for text in page.markdown))
-                self.assertTrue(any("unresolved attempts" in text.value for text in page.markdown))
-                self.assertFalse(any("SECRET" in str(node.value) for kind in ("markdown", "caption", "code")
-                                     for node in page.get(kind)))
-
-    def test_capped_run_feedback_and_same_item_comparison(self):
-        level, message = run_feedback({"paused": False, "models": {"m": {"pending": 2, "answered": 2, "total": 4},
-                                                                  "n": {"pending": 3, "answered": 1, "total": 4}}}, ["m", "n"])
-        self.assertEqual(level, "warning")
-        self.assertIn("5 answers still pending", message)
-        self.assertIn("m: 2/4 answered", message)
-        self.assertIn("n: 1/4 answered", message)
-        self.assertEqual(run_feedback({"paused": True}, ["m", "n"])[0], "warning")
-        self.assertEqual(run_feedback({"paused": False, "models": {"m": {"pending": 0}}}, ["m", "n"])[0], "success")
-        rows = [{"model": "a", "item_id": "one", "correct": True},
-                {"model": "b", "item_id": "one", "correct": False},
-                {"model": "a", "item_id": "two", "correct": True},
-                {"model": "b", "item_id": "two", "correct": None}]
-        compared = matched_comparison(rows, ["a", "b"])
-        self.assertEqual([row["Correct / matched"] for row in compared], ["1/1", "0/1"])
-        self.assertEqual([row["Shared scored items"] for row in compared], [1, 1])
-        self.assertTrue(attention_matches({"score_status": "review"}, "Needs review"))
-        self.assertFalse(attention_matches({"correct": None}, "Incorrect"))
-
-    def test_offline_demo_runs_from_ui(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            shutil.copyfile(ROOT / "app.py", home / "app.py")
-            dataset_dir = home / "datasets" / "v1.0"
-            dataset_dir.mkdir(parents=True)
-            shutil.copyfile(ROOT / "datasets/v1.0/dev.jsonl", dataset_dir / "dev.jsonl")
-            page = AppTest.from_file(str(home / "app.py")).run()
-            demo = next(button for button in page.button if button.label == "Try offline demo")
-            page = demo.click().run()
-            self.assertFalse(page.exception)
-            self.assertTrue(any("Synthetic demo saved" in message.value for message in page.success))
-            self.assertTrue(any("SYNTHETIC" in message.value for message in page.warning))
-            folders = [folder for folder in (home / "runs").iterdir() if folder.is_dir()]
-            self.assertEqual(len(folders), 1)
-            summary = json.loads((folders[0] / "summary.json").read_text(encoding="utf-8"))
+        with patch("evaluation.access.preflight") as preflight, patch(
+                "evaluation.runner.run_live_comparison") as router, patch(
+                "evaluation.runner.run_opencode_comparison") as code, patch(
+                "evaluation.runner.run", side_effect=save_demo):
+            response = self.client.post("/demo", data={key: fields[key] for key in
+                                                        ("csrf_token", "submission_nonce")})
+            self.assertEqual(response.status_code, 302)
+            self.wait_for_worker(done)
+            self.assertEqual(len(list(self.runs.glob("*/summary.json"))), 1)
+            summary = json.loads(next(self.runs.glob("*/summary.json")).read_text(encoding="utf-8"))
             self.assertTrue(summary["synthetic"])
-            self.assertEqual(summary["models"]["demo-fixture"]["answered"], 4)
+            preflight.assert_not_called()
+            router.assert_not_called()
+            code.assert_not_called()
 
-    def test_truncated_saved_answer_is_not_invalid(self):
-        rows = joined_rows([{"id": "one", "category": "reasoning"}],
-                           [{"model": "m", "item_id": "one", "status": "ok", "finish_reason": "length"}],
-                           [], ["m"])
-        self.assertEqual(rows[0]["response_status"], "truncated")
-        self.assertEqual(tally(rows)["truncated"], 1)
-        self.assertEqual(tally(rows)["invalid"], 0)
+    def test_csv_only_serves_fixed_results_file_and_rejects_unsafe_paths(self):
+        folder = self.save_run()
+        expected = (folder / "results.csv").read_bytes()
+        result = self.client.get("/runs/sample/results.csv")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.data, expected)
+        self.assertIn("text/csv", result.content_type)
+        result.close()
+        for path in ("/runs/../results.csv", "/runs/%2e%2e/results.csv",
+                     "/runs/sample/config.json", "/runs/sample/results.csv/../config.json"):
+            with self.subTest(path=path):
+                self.assertNotEqual(self.client.get(path).status_code, 200)
+        (folder / "results.csv").unlink()
+        (folder / "results.csv").symlink_to(folder / "config.json")
+        self.assertNotEqual(self.client.get("/runs/sample/results.csv").status_code, 200)
+        external = self.runs / "linked"
+        external.symlink_to(folder, target_is_directory=True)
+        self.assertNotEqual(self.client.get("/runs/linked/results.csv").status_code, 200)
 
-    def test_empty_and_synthetic_saved_run(self):
-        # A copied app resolves runs/ beside itself, independent of anyone's local runs.
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            app = home / "app.py"
-            shutil.copyfile(ROOT / "app.py", app)
-            empty = AppTest.from_file(str(app)).run()
-            self.assertFalse(empty.exception)
-            self.assertTrue(any("See why an answer" in note.value for note in empty.markdown))
-            self.assertEqual([heading.value for heading in empty.header[:2]],
-                              ["Compare two models.", "Read the record."])
-            self.assertTrue(any("No saved runs found" in message.value for message in empty.info))
+    def test_saved_content_is_html_escaped(self):
+        self.save_run(models=["<script>alert(1)</script>", "fixture-b"])
+        page = self.client.get("/?run=sample")
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn(b"<script>alert(1)</script>", page.data)
+        self.assertIn(b"&lt;script&gt;alert(1)&lt;/script&gt;", page.data)
 
-            fixtures = home / "fixtures.json"
-            fixtures.write_text(json.dumps({"fixture-a": {"dr1-o": "B", "dr1-p": "A",
-                                                       "dm1-o": "7", "dm1-p": "7"}}), encoding="utf-8")
-            run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, home / "runs" / "smoke", ["fixture-a"])
-            dashboard = AppTest.from_file(str(app)).run()
-            self.assertFalse(dashboard.exception)
-            self.assertTrue(any("SYNTHETIC" in message.value for message in dashboard.warning))
-            self.assertEqual([tab.label for tab in dashboard.tabs],
-                             ["Overview", "Question types", "Reworded questions", "See every check"])
-            metrics = {metric.label: metric.value for metric in dashboard.metric}
-            self.assertEqual({label: metrics[label] for label in
-                              ("Correct / scored", "Answered / total", "For human review", "Pending")},
-                             {"Correct / scored": "3/4", "Answered / total": "4/4",
-                              "For human review": "0", "Pending": "0"})
-            self.assertEqual(metrics["Complete scored pairs"], "2/2")
-            self.assertTrue(any("3/4 scored" in getattr(progress, "text", "")
-                                for progress in dashboard.get("progress")), repr(dashboard.get("progress")))
-            self.assertTrue(any("Objective rate" in frame.value.columns for frame in dashboard.dataframe))
-            self.assertTrue(any("Prompt" in heading.value for heading in dashboard.subheader))
-            self.assertTrue(any("What is 3 plus 4" in block.value for block in dashboard.code))
-            self.assertTrue(any("Declared scorer and rules" in heading.value for heading in dashboard.subheader))
-            self.assertTrue(any("Saved checks and decision" in heading.value for heading in dashboard.subheader))
-            self.assertTrue(any("B" == block.value for block in dashboard.code))
-            self.assertTrue(any("Download saved run as CSV" in button.label
-                                for button in dashboard.get("download_button")))
-            pair = next(box for box in dashboard.selectbox if box.label == "Pair ID")
-            dashboard = pair.set_value("dr1").run()
-            self.assertFalse(dashboard.exception)
-            self.assertTrue(any("Eva is older" in block.value for block in dashboard.code))
-            search = next(box for box in dashboard.text_input if box.label == "Find item")
-            dashboard = search.set_value("dm1-o").run()
-            self.assertFalse(dashboard.exception)
-            self.assertTrue(any(block.value == "7" for block in dashboard.code))
-            self.assertTrue(any('"tolerance": 0.0001' in block.value for block in dashboard.code))
-            self.assertTrue(any('"within_tolerance": true' in block.value for block in dashboard.code))
-            self.assertTrue(any("Showing 1 of 4" in caption.value for caption in dashboard.caption))
-
-    def test_saved_two_model_run_shows_matched_comparison_without_requests(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            shutil.copyfile(ROOT / "app.py", home / "app.py")
-            fixtures = home / "fixtures.json"
-            fixtures.write_text(json.dumps({"first": {"dr1-o": "B", "dr1-p": "B", "dm1-o": "7", "dm1-p": "7"},
-                                            "second": {"dr1-o": "A", "dr1-p": "B", "dm1-o": "7",
-                                                       "dm1-p": {"status": 429}}}), encoding="utf-8")
-            run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, home / "runs" / "pair", ["first", "second"])
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock()
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_live_comparison", create=True) as live:
-                page = AppTest.from_file(str(home / "app.py")).run()
-                self.assertFalse(page.exception)
-                self.assertTrue(any(heading.value == "Same-item comparison" for heading in page.subheader))
-                matched = next(frame.value for frame in page.dataframe if "Shared scored items" in frame.value.columns)
-                self.assertEqual(matched["Correct / matched"].tolist(), ["3/3", "2/3"])
-                self.assertTrue(any("Partial comparison" in info.value for info in page.info))
-                self.assertTrue(any("first ·" in getattr(progress, "text", "") for progress in page.get("progress")))
-                self.assertTrue(any("second ·" in getattr(progress, "text", "") for progress in page.get("progress")))
-                access.preflight.assert_not_called()
-                live.assert_not_called()
-
-    def test_empty_live_record_does_not_claim_measured_comparison(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            app = home / "app.py"
-            shutil.copyfile(ROOT / "app.py", app)
-            fixtures = home / "fixtures.json"
-            fixtures.write_text(json.dumps({"first": {"dr1-o": "B"}, "second": {"dr1-o": "B"}}), encoding="utf-8")
-            folder = home / "runs" / "empty-live"
-            run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, folder, ["first", "second"])
-            # Simulate a saved, unresolved live run with no completed responses.
-            for name in ("config.json", "summary.json"):
-                path = folder / name
-                data = json.loads(path.read_text(encoding="utf-8"))
-                data.update(synthetic=False, source="opencode_live")
-                if name == "summary.json":
-                    for counts in data["models"].values():
-                        counts.update(answered=0, scored=0, correct=0, incorrect=0, pending=4)
-                path.write_text(json.dumps(data), encoding="utf-8")
-            (folder / "responses.jsonl").write_text("", encoding="utf-8")
-            (folder / "scores.jsonl").write_text("", encoding="utf-8")
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock()
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_opencode_comparison") as live:
-                page = AppTest.from_file(str(app)).run()
-                self.assertFalse(page.exception)
-                self.assertTrue(any("No model responses are saved" in warning.value and
-                                    "may still have reached" in warning.value for warning in page.warning))
-                self.assertTrue(any("No questions have objective scores for both models" in info.value
-                                    for info in page.info))
-                self.assertTrue(any("Source: OpenCode" in caption.value for caption in page.caption))
-                self.assertFalse(any("Shared scored items" in frame.value.columns for frame in page.dataframe))
-                self.assertIn("Compare answers", [tab.label for tab in page.tabs])
-                self.assertEqual(sum("Pending · no saved answer" in info.value for info in page.info), 2)
-                self.assertFalse(any("Objective score:" in text.value for text in page.tabs[1].markdown))
-                access.preflight.assert_not_called()
-                live.assert_not_called()
-
-    def test_question_comparison_keeps_review_failure_and_pending_separate(self):
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            shutil.copyfile(ROOT / "app.py", home / "app.py")
-            fixtures = home / "fixtures.json"
-            fixtures.write_text(json.dumps({
-                "first": {"dr1-o": "B", "dr1-p": "not a choice", "dm1-o": "7 units",
-                          "dm1-p": {"status": 500}},
-                "second": {"dr1-o": "A", "dr1-p": {"status": 500}, "dm1-o": "7",
-                           "dm1-p": {"status": 429}},
-            }), encoding="utf-8")
-            run(ROOT / "datasets/v1.0/dev.jsonl", fixtures, home / "runs" / "cases", ["first", "second"])
-            access = types.ModuleType("evaluation.access")
-            access.preflight = Mock()
-            with patch.dict(sys.modules, {"evaluation.access": access}), patch(
-                    "evaluation.runner.run_live_comparison") as live:
-                page = AppTest.from_file(str(home / "app.py")).run()
-                self.assertFalse(page.exception)
-                self.assertIn("Compare answers", [tab.label for tab in page.tabs])
-                self.assertTrue(any("Objective score: Correct" in text.value for text in page.markdown))
-                self.assertTrue(any("Objective score: Incorrect" in text.value for text in page.markdown))
-                question = next(box for box in page.selectbox if box.label == "Question to compare")
-                page = question.set_value(next(option for option in question.options if option.startswith("dr1-p ·"))).run()
-                self.assertFalse(page.exception)
-                self.assertTrue(any("Invalid or unscored" in warning.value for warning in page.warning))
-                self.assertTrue(any("Request failed · no saved answer" in warning.value for warning in page.warning))
-                self.assertFalse(any("Objective score:" in text.value for text in page.tabs[1].markdown))
-                question = next(box for box in page.selectbox if box.label == "Question to compare")
-                page = question.set_value(next(option for option in question.options if option.startswith("dm1-o ·"))).run()
-                self.assertTrue(any("Needs human review · no objective score" in info.value for info in page.info))
-                self.assertTrue(any("Objective score: Correct" in text.value for text in page.markdown))
-                question = next(box for box in page.selectbox if box.label == "Question to compare")
-                page = question.set_value(next(option for option in question.options if option.startswith("dm1-p ·"))).run()
-                self.assertTrue(any("Rate limited · no saved answer" in info.value for info in page.info))
-                self.assertTrue(any("Request failed · no saved answer" in warning.value for warning in page.warning))
-                self.assertFalse(any("Objective score:" in text.value for text in page.tabs[1].markdown))
-                access.preflight.assert_not_called()
-                live.assert_not_called()
+    def test_remote_host_and_origin_are_blocked(self):
+        with patch("evaluation.access.preflight") as preflight, patch(
+                "evaluation.runner.run_live_comparison") as router:
+            data = self.form()
+            for response in (self.client.get("/", headers={"Host": "evil.example"}),
+                             self.client.post("/runs", data=data, headers={"Host": "evil.example"}),
+                             self.client.post("/runs", data=data,
+                                              headers={"Origin": "https://evil.example"})):
+                self.assertIn(response.status_code, (400, 403))
+            preflight.assert_not_called()
+            router.assert_not_called()
 
 
 if __name__ == "__main__":
