@@ -1,12 +1,14 @@
 """Offline counts and paired accuracy from frozen items and saved records."""
 
 import csv
+import math
 import os
+from statistics import mean, median
 
 
 def _counts(planned):
     return {"total": planned, "planned": planned, "answered": 0, "scored": 0, "correct": 0,
-            "incorrect": 0, "accuracy": None, "review": 0, "invalid": 0,
+            "incorrect": 0, "accuracy": None, "review": 0, "invalid": 0, "unscored": 0,
             "failures": 0, "truncated": 0, "rate_limited": 0, "pending": planned}
 
 
@@ -23,7 +25,9 @@ def analyze(items, responses, scores, models, *, synthetic=True, source="offline
     score_by_key = {}
     for record in scores:
         key = (record["model"], record["item_id"])
-        if key in score_by_key or key not in response_by_key or response_by_key[key]["status"] != "ok":
+        if (key in score_by_key or key not in response_by_key or
+                response_by_key[key]["status"] != "ok" or
+                response_by_key[key].get("finish_reason") == "length"):
             raise ValueError(f"unexpected or duplicate score key: {key}")
         score_by_key[key] = record
 
@@ -33,6 +37,7 @@ def analyze(items, responses, scores, models, *, synthetic=True, source="offline
                       for category in sorted({item["category"] for item in items})}
         overall = _counts(len(items))
         objective = {}
+        latencies = []
         for item in items:
             key = (model, item["id"])
             response = response_by_key.get(key)
@@ -50,10 +55,15 @@ def analyze(items, responses, scores, models, *, synthetic=True, source="offline
                 elif status != "ok":
                     counts["failures"] += 1
                 else:
-                    if record is None:
-                        raise ValueError(f"missing score key: {key}")
                     counts["answered"] += 1
-                    if record["status"] == "scored" and type(record["correct"]) is bool:
+                    if (counts is overall and not synthetic and source in
+                            {"openrouter_live", "opencode_live"} and
+                            type(response.get("latency_ms")) in (int, float) and
+                            math.isfinite(response["latency_ms"]) and response["latency_ms"] >= 0):
+                        latencies.append(response["latency_ms"])
+                    if record is None:
+                        counts["unscored"] += 1
+                    elif record["status"] == "scored" and type(record["correct"]) is bool:
                         counts["scored"] += 1
                         counts["correct" if record["correct"] else "incorrect"] += 1
                         objective[key] = record["correct"]
@@ -75,8 +85,13 @@ def analyze(items, responses, scores, models, *, synthetic=True, source="offline
         orig_correct = sum(original for original, _ in complete)
         variant_correct = sum(variant for _, variant in complete)
         overall["categories"] = categories
+        overall["latency_ms"] = {"count": len(latencies), "average": mean(latencies) if latencies else None,
+                                 "median": median(latencies) if latencies else None}
         overall["pairs"] = {"planned": len(pairs), "complete": len(complete),
+                            "original_scored": len(complete), "paraphrase_scored": len(complete),
                             "original_correct": orig_correct, "variant_correct": variant_correct,
+                            "original_accuracy": orig_correct / len(complete) if complete else None,
+                            "paraphrase_accuracy": variant_correct / len(complete) if complete else None,
                             "original_minus_variant_pp": 100 * (orig_correct - variant_correct) / len(complete)
                             if complete else None,
                             "original_correct_variant_wrong": sum(o and not v for o, v in complete),
@@ -109,7 +124,9 @@ def analyze(items, responses, scores, models, *, synthetic=True, source="offline
                       "accuracy": (sum(score_by_key[(model, item_id)]["correct"]
                                        for item_id in matched) / len(matched) if matched else None)}
                       for model in models},
-                  "categories": matched_by_category}
+                   "categories": matched_by_category,
+                   "category_matched_questions": {category: rows[models[0]]["scored"]
+                                                  for category, rows in matched_by_category.items()} if models else {}}
     if len(models) == 2:
         accuracies = [comparison["models"][model]["accuracy"] for model in models]
         comparison["accuracy_difference_pp"] = (100 * (accuracies[0] - accuracies[1])

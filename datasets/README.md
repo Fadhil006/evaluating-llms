@@ -5,6 +5,12 @@ each with one manually checked meaning-preserving paraphrase (24 test items).
 `v1.0/dev.jsonl` contains separate development pairs; debug only with dev items.
 Load each file with `evaluation.dataset.load_dataset`; validate a combined list
 to check that IDs, prompts, and pairs do not collide across files.
+The shared runner accepts optional `pair_ids` to keep one or more complete
+original/paraphrase pairs in dataset order. Without a selection it uses the
+whole dataset. The frozen `dataset.jsonl` contains only selected items;
+`config.json` records `selected_pair_ids` and `selected_item_ids` and hashes
+that snapshot. The CLI currently has no pair-selection flag; the local Flask
+form accepts complete pair IDs and sends them to the shared runner.
 
 All items are original short prompts authored for this project (`source`:
 `original:project-authored`); there are no imported benchmark questions or

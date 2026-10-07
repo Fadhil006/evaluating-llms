@@ -1,7 +1,9 @@
 """Local-only Flask interface for saved evaluations and opt-in comparisons."""
 
+import csv
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -36,6 +38,16 @@ MODEL_PROVIDERS = {
 OPENCODE_MODELS = {
     "opencode/ling-3.1-flash-free": "Ling 3.1 Flash",
     "opencode/nemotron-3-ultra-free": "Nemotron 3 Ultra",
+    "opencode/big-pickle": "Big Pickle",
+    "opencode/space-bunny-free": "Space Bunny Free",
+    "opencode/longcat-2.5-preview-free": "LongCat 2.5 Preview Free",
+    "opencode/exo-free": "Exo Free",
+    "opencode/fledge-alpha-free": "Fledge Alpha Free",
+    "opencode/mimo-v2.6-flash-free": "MiMo-V2.6-Flash Free",
+    "opencode/mimo-v2.5-free": "MiMo-V2.5 Free",
+    "opencode/ling-3.0-flash-fin-free": "Ling 3.0 Flash Fin Free",
+    "opencode/nemotron-3.5-lightning-free": "Nemotron 3.5 Lightning Free",
+    "opencode/muse-spark-1.3-contributor-free": "Muse Spark 1.3 Contributor Free",
 }
 BACKENDS = {
     "OpenRouter": [{"id": key, "label": f"{label} · {MODEL_PROVIDERS[key]}"}
@@ -43,7 +55,6 @@ BACKENDS = {
     "OpenCode (free-labeled)": [{"id": key, "label": label}
                                 for key, label in OPENCODE_MODELS.items()],
 }
-FILES = ("config.json", "dataset.jsonl", "responses.jsonl", "scores.jsonl", "summary.json")
 RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 
 app = Flask(__name__)
@@ -82,49 +93,171 @@ def safe_file(folder, name):
     return path
 
 
+def dataset_options():
+    from evaluation.dataset import load_dataset
+
+    options = []
+    for option in DATASET_OPTIONS:
+        items = load_dataset(DATASETS / option["id"])
+        pairs = {}
+        for item in items:
+            pair = pairs.setdefault(item["pair_id"], {"id": item["pair_id"],
+                                                       "pair_id": item["pair_id"],
+                                                       "category": item["category"]})
+            pair[item["variant"]] = item
+        options.append({**option, "items": items, "pairs": list(pairs.values())})
+    return options
+
+
+def records(folder, name, *, required=False):
+    path = folder / name
+    if not path.exists() and not required:
+        return []
+    data = safe_file(folder, name).read_bytes()
+    if data and not data.endswith(b"\n"):
+        raise ValueError("Incomplete saved log.")
+    return [json.loads(line) for line in data.splitlines() if line.strip()]
+
+
+def csv_matches(folder, items, responses, scores, config):
+    from evaluation.analysis import CSV_FIELDS, _csv_cell
+
+    try:
+        path = safe_file(folder, "results.csv")
+        with path.open(encoding="utf-8", newline="") as stream:
+            actual = list(csv.DictReader(stream))
+        response_keys = {(row["model"], row["item_id"]): row for row in responses}
+        score_keys = {(row["model"], row["item_id"]): row for row in scores}
+        expected = []
+        for model in config["models"]:
+            for item in items:
+                response = response_keys.get((model, item["id"]), {})
+                score = score_keys.get((model, item["id"]), {})
+                status = response.get("status", "pending")
+                if status == "ok" and response.get("finish_reason") == "length":
+                    status = "truncated"
+                row = dict(zip(CSV_FIELDS, (str(config["synthetic"]).lower(), config["source"], model,
+                    item["id"], item["pair_id"], item["variant"], item["split"], item["category"],
+                    status, score.get("status", ""),
+                    str(score["correct"]).lower() if score.get("correct") is not None else "",
+                    response.get("answer") or "", response.get("error") or "",
+                    response.get("latency_ms", ""))))
+                expected.append({key: "" if value is None else str(_csv_cell(value))
+                                 for key, value in row.items()})
+        return actual == expected
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError, csv.Error):
+        return False
+
+
 def load_run(folder):
-    """Read only the five expected artifacts, never invoking a runner or provider."""
+    """Read frozen records without invoking a runner or provider."""
     if RUNS.is_symlink() or folder.parent != RUNS or folder.is_symlink() or not folder.is_dir():
         raise ValueError("Unsafe run directory.")
-    files = {name: safe_file(folder, name) for name in FILES}
-
-    def document(name):
-        with files[name].open(encoding="utf-8") as stream:
-            return json.load(stream)
-
-    snapshot = files["dataset.jsonl"].read_bytes()
-    def lines(name):
-        data = snapshot if name == "dataset.jsonl" else files[name].read_bytes()
-        if data and not data.endswith(b"\n"):
-            raise ValueError("Incomplete saved log.")
-        return [json.loads(line) for line in data.splitlines() if line.strip()]
-
-    config, items, responses, scores, summary = (
-        document("config.json"), lines("dataset.jsonl"), lines("responses.jsonl"),
-        lines("scores.jsonl"), document("summary.json"))
-    if not isinstance(config, dict) or not isinstance(summary, dict) or not isinstance(config.get("models"), list) or not isinstance(summary.get("models"), dict):
+    config = json.loads(safe_file(folder, "config.json").read_text(encoding="utf-8"))
+    snapshot = safe_file(folder, "dataset.jsonl").read_bytes()
+    items = records(folder, "dataset.jsonl", required=True)
+    responses = records(folder, "responses.jsonl")
+    saved_scores = records(folder, "scores.jsonl")
+    attempts = records(folder, "attempts.jsonl")
+    if not isinstance(config, dict) or not isinstance(config.get("models"), list):
         raise ValueError("Invalid run metadata.")
     from evaluation.analysis import analyze
     from evaluation.dataset import validate_dataset
+    from evaluation.runner import _scorer_hash
 
     models = config["models"]
     if (not models or len(models) != len(set(models)) or
             any(not isinstance(model, str) or not model for model in models) or
             type(config.get("synthetic")) is not bool or
-            summary.get("synthetic") is not config["synthetic"] or
-            not isinstance(config.get("source"), str) or summary.get("source") != config["source"] or
+            not isinstance(config.get("source"), str) or
+            config.get("schema_version", 1) != 1 or
+            not isinstance(config.get("scorer_version"), str) or
             hashlib.sha256(snapshot).hexdigest() != config.get("dataset_hash")):
         raise ValueError("Inconsistent saved run.")
     validate_dataset(items)
     if {item["split"] for item in items} != {config.get("split")} or {item["dataset_version"] for item in items} != {config.get("dataset_version")}:
         raise ValueError("Inconsistent frozen dataset.")
-    item_ids = {item["id"] for item in items}
-    for record in (*responses, *scores):
+    if ("selected_item_ids" in config and config["selected_item_ids"] != [item["id"] for item in items] or
+            "selected_pair_ids" in config and config["selected_pair_ids"] !=
+            list(dict.fromkeys(item["pair_id"] for item in items))):
+        raise ValueError("Inconsistent frozen pair selection.")
+    item_ids = {item["id"]: item for item in items}
+    latency_warning = False
+    for record in responses:
+        latency = record.get("latency_ms")
+        if latency is not None and (type(latency) not in (int, float) or
+                                    not math.isfinite(latency) or latency < 0):
+            # Keep inspecting the answer, but do not present malformed latency as a measurement.
+            record["latency_ms"] = None
+            latency_warning = True
+    for record in (*responses, *saved_scores):
         if (not isinstance(record, dict) or record.get("model") not in models or
                 record.get("item_id") not in item_ids or record.get("synthetic") is not config["synthetic"]):
             raise ValueError("Invalid saved record linkage.")
-    # Derive display counts from the frozen records, not a potentially stale summary.json.
+    if config["synthetic"]:
+        if attempts:
+            raise ValueError("Unexpected synthetic attempts.")
+    else:
+        from evaluation.runner import _validate_live_logs
+        unresolved = _validate_live_logs(config, items, attempts, responses)
+    seen, effective_responses = set(), {}
+    for response in responses:
+        key = (response["model"], response["item_id"])
+        if response.get("status") not in ("ok", "error", "truncated", "rate_limited"):
+            raise ValueError("Invalid response status.")
+        if response["status"] == "rate_limited":
+            continue
+        if key in seen:
+            raise ValueError("Duplicate response.")
+        seen.add(key)
+        effective_responses[key] = response
+    eligible = {key for key, response in effective_responses.items()
+                if response["status"] == "ok" and response.get("finish_reason") != "length"}
+    score_keys = set()
+    for record in saved_scores:
+        key = (record["model"], record["item_id"])
+        if (key not in eligible or key in score_keys or
+                record.get("status") not in ("scored", "review", "invalid") or
+                record.get("status") == "scored" and type(record.get("correct")) is not bool or
+                record.get("status") != "scored" and record.get("correct") is not None):
+            raise ValueError("Invalid or ineligible saved score.")
+        score_keys.add(key)
+    scores = saved_scores
     summary = analyze(items, responses, scores, models, synthetic=config["synthetic"], source=config["source"])
+    summary["scorer_version_current"] = config["scorer_version"] == _scorer_hash()
+    summary["latency_data_warning"] = latency_warning
+    summary["unresolved_attempts"] = unresolved if not config["synthetic"] else 0
+    summary["paused"] = bool(summary["unresolved_attempts"] or responses and
+        responses[-1]["status"] == "rate_limited" or not config["synthetic"] and
+        any(row.get("error") in ("reported cost is positive", "returned model differs from requested ID",
+                                 "returned provider differs from requested slug") for row in responses))
+    pending = sum(summary["models"][model]["pending"] for model in models)
+    missing_scores = sum(summary["models"][model].get("unscored", 0) for model in models)
+    other_failures = sum(summary["models"][model]["failures"] + summary["models"][model]["invalid"] +
+                         summary["models"][model]["truncated"] + summary["models"][model]["rate_limited"]
+                         for model in models)
+    status = ("paused" if summary["paused"] else "partial"
+              if pending or missing_scores or other_failures else "complete")
+    # A CSV is trustworthy only if all saved derived files agree with frozen records.
+    reports_current = False
+    try:
+        saved_summary = json.loads(safe_file(folder, "summary.json").read_text(encoding="utf-8"))
+        reports_current = (saved_scores == scores and isinstance(saved_summary, dict) and
+                           all(saved_summary.get(key) == summary[key] for key in
+                               ("synthetic", "source", "models", "matched_comparison", "unresolved_attempts")) and
+                           csv_matches(folder, items, responses, saved_scores, config) and
+                           (config["synthetic"] or all(row.get("error") in (
+                               None, "HTTP 429", "HTTP 4xx", "HTTP 5xx", "reported cost is positive",
+                               "returned model differs from requested ID",
+                               "returned provider differs from requested slug") for row in responses)))
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError):
+        pass
+    if not config["synthetic"]:
+        for response in responses:
+            if response.get("error") and response["error"] not in (
+                    "HTTP 429", "HTTP 4xx", "HTTP 5xx", "reported cost is positive",
+                    "returned model differs from requested ID", "returned provider differs from requested slug"):
+                response["error"] = "Provider error; inspect local logs."
     summary["evidence_label"] = (
         "NOT MEASURED · no saved model responses; check attempts and provider before retrying"
         if not responses else
@@ -133,8 +266,9 @@ def load_run(folder):
         "DECLARED LIVE · saved records, not independently verified"
         if config.get("synthetic") is False and summary.get("synthetic") is False else
         "EVIDENCE TYPE UNVERIFIED · inspect run metadata")
-    return {"id": folder.name, "config": config, "summary": summary,
-            "items": items, "responses": responses, "scores": scores}
+    return {"id": folder.name, "config": config, "summary": summary, "status": status,
+            "csv_available": reports_current, "items": items, "responses": responses,
+            "scores": scores, "attempts": attempts}
 
 
 def csrf_valid():
@@ -161,19 +295,34 @@ def index():
     runs = []
     if RUNS.is_dir() and not RUNS.is_symlink():
         for folder in sorted(RUNS.iterdir()):
+            if not RUN_NAME.fullmatch(folder.name) or folder.is_symlink() or not folder.is_dir():
+                continue
             try:
                 runs.append(load_run(safe_run_path(folder.name)))
             except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, UnicodeError):
-                continue  # In-progress and malformed runs do not become archive entries.
+                runs.append({"id": folder.name, "config": {}, "summary": {}, "status": "error",
+                             "csv_available": False, "items": [], "responses": [], "scores": [],
+                             "attempts": []})
     selected_id = request.args.get("run")
     selected = next((run for run in runs if run["id"] == selected_id), None)
+    archive_runs = [run for run in runs if not run["id"].startswith("demo-")]
     error = None
-    if selected_id is not None and selected is None:
+    if selected_id is not None and selected is None and not (
+            worker_lock.locked() and selected_id == progress["run"]):
         error = "Cannot read this saved run. Inspect its local files for missing or invalid records."
     messages = get_flashed_messages(with_categories=True)
     notice = next((text for category, text in messages if category == "notice"), None)
     error = error or next((text for category, text in messages if category == "error"), None)
     busy = worker_lock.locked()
+    if selected_id == progress["run"]:
+        run_progress = {"run_id": selected_id, "busy": busy, "event": progress["event"],
+                        "notice": progress["notice"]}
+    elif selected and (selected["summary"].get("paused") or selected["summary"].get("unresolved_attempts")):
+        unresolved = selected["summary"].get("unresolved_attempts", 0)
+        run_progress = {"run_id": selected_id, "busy": False, "event": None,
+                        "notice": f"Saved records show {unresolved} unresolved attempt(s). Delivery is unknown; no automatic retry was made."}
+    else:
+        run_progress = None
     if selected_id == progress["run"]:
         event = progress["event"]
         if busy and event:
@@ -182,16 +331,39 @@ def index():
                       f"{event['item_id']} ({event['status']}).")
         elif not busy and progress["notice"]:
             notice = progress["notice"]
-    return render_template("index.html", datasets=DATASET_OPTIONS, backends=BACKENDS,
-                           runs=[{k: run[k] for k in ("id", "config", "summary")} for run in runs],
+    try:
+        datasets = dataset_options()
+    except (OSError, ValueError, TypeError, UnicodeError):
+        datasets = []
+        error = error or "Question sets unavailable; no run can be started."
+    has_successful_live = any(
+        run.get("status") != "error" and run["config"].get("synthetic") is False and
+        any(response.get("status") == "ok" for response in run["responses"])
+        for run in runs)
+    return render_template("index.html", datasets=datasets,
+                           pair_options={option["id"]: option["pairs"] for option in datasets},
+                           backends=BACKENDS,
+                           runs=[{k: run[k] for k in ("id", "config", "summary", "status", "csv_available")} for run in archive_runs],
                            selected=selected, busy=busy, csrf_token=session["csrf_token"],
-                           submission_nonce=session["submission_nonce"], notice=notice, error=error)
+                           submission_nonce=session["submission_nonce"], notice=notice, error=error,
+                           run_progress=run_progress,
+                           evidence_status="successful live responses saved" if has_successful_live else "measured results pending",
+                           has_successful_live=has_successful_live)
 
 
 def finish_run(folder, action, *args, **kwargs):
     try:
-        action(*args, **kwargs)
-        progress.update(run=folder.name, notice="Saved run ready. Inspect saved outcomes; no automatic retry was started.")
+        result = action(*args, **kwargs)
+        models = result.get("models", {})
+        incomplete = any(counts.get(key, 0) for counts in models.values()
+                        for key in ("pending", "unscored", "invalid", "failures", "truncated", "rate_limited"))
+        if result.get("paused") or result.get("unresolved_attempts"):
+            message = "Run paused. Inspect saved attempts and provider account; no automatic retry was started."
+        elif incomplete:
+            message = "Run partial. Some questions are pending, failed, invalid, truncated, or unscored; inspect saved outcomes."
+        else:
+            message = "Run complete. All selected model/question items have saved score records."
+        progress.update(run=folder.name, notice=message)
     except Exception:
         # Exceptions may contain keys, paths, or provider response bodies: never publish them.
         progress.update(run=folder.name, notice="Run paused or failed. Inspect local attempts and provider account before retrying; a request may have reached the provider.")
@@ -209,8 +381,8 @@ def start_worker(folder, action, *args, **kwargs):
         worker_lock.release()
         flash("Could not start the run; no request was started.", "error")
         return redirect(url_for("index"))
-    flash("Run started in the background. Saved progress appears when you refresh.", "notice")
-    return redirect(url_for("index", run=folder.name))
+    flash("Run started. Saved response and scoring progress will appear below; refreshes are read-only.", "notice")
+    return redirect(url_for("index", run=folder.name) + "#evaluation-progress")
 
 
 @app.post("/runs")
@@ -220,19 +392,39 @@ def create_run():
     dataset = request.form.get("dataset")
     backend = request.form.get("backend")
     models = [request.form.get("model_a"), request.form.get("model_b")]
+    selected_pairs = request.form.getlist("selected_pairs")
     try:
         folder = safe_run_path(request.form.get("run_name"))
-        if dataset not in {option["id"] for option in DATASET_OPTIONS} or backend not in BACKENDS:
-            raise ValueError
-        if models[0] == models[1] or any(model not in {option["id"] for option in BACKENDS[backend]} for model in models):
-            raise ValueError
-        cap_text = request.form.get("max_requests", "")
-        if not re.fullmatch(r"[1-9][0-9]?", cap_text) or not 1 <= int(cap_text) <= 50:
-            raise ValueError
-        if request.form.get("confirmed") not in ("on", "true", "yes", "1"):
-            raise ValueError
-    except (TypeError, ValueError):
-        flash("Invalid dataset, backend, models, cap, run name or confirmation. Nothing was sent.", "error")
+    except ValueError:
+        flash("Run name must be 1–64 letters, numbers, underscores or dashes.", "error")
+        return redirect(url_for("index"))
+    if dataset not in {option["id"] for option in DATASET_OPTIONS}:
+        flash("Choose either the Development or Held-out dataset.", "error")
+        return redirect(url_for("index"))
+    if backend not in BACKENDS:
+        flash("Choose a listed model connection.", "error")
+        return redirect(url_for("index"))
+    allowed_models = {option["id"] for option in BACKENDS[backend]}
+    if models[0] == models[1] or any(model not in allowed_models for model in models):
+        flash("Choose two different model IDs from the selected connection.", "error")
+        return redirect(url_for("index"))
+    cap_text = request.form.get("max_requests", "")
+    if not re.fullmatch(r"[1-9][0-9]?", cap_text) or not 1 <= int(cap_text) <= 50:
+        flash("Shared attempt cap must be a whole number from 1 to 50.", "error")
+        return redirect(url_for("index"))
+    if request.form.get("confirmed") not in ("on", "true", "yes", "1"):
+        flash("Confirm the live request warning before starting; nothing was sent.", "error")
+        return redirect(url_for("index"))
+    try:
+        options = dataset_options()
+    except (OSError, TypeError, ValueError, UnicodeError):
+        flash("The selected question set could not be validated; no request was sent.", "error")
+        return redirect(url_for("index"))
+    available = {pair["id"] for option in options if option["id"] == dataset
+                 for pair in option["pairs"]}
+    if (not selected_pairs or len(selected_pairs) != len(set(selected_pairs)) or
+            not set(selected_pairs) <= available):
+        flash("Select one or more unique question pairs belonging to the chosen dataset.", "error")
         return redirect(url_for("index"))
     if not worker_lock.acquire(blocking=False):
         flash("Another run is in progress; no new request was started.", "error")
@@ -242,7 +434,11 @@ def create_run():
         try:
             from evaluation.access import preflight
             access = preflight(max_requests=cap)
-            if not isinstance(access, dict) or access.get("allowed") is False or access.get("ok") is False:
+            if (not isinstance(access, dict) or access.get("allowed") is False or
+                    access.get("ok") is False or
+                    type(access.get("free_remaining")) is not int or
+                    type(access.get("free_limit")) is not int or
+                    access["free_remaining"] < cap):
                 raise ValueError
         except Exception:
             worker_lock.release()
@@ -261,9 +457,20 @@ def create_run():
         worker_lock.release()
         flash("Could not prepare the run; no request was started.", "error")
         return redirect(url_for("index"))
+    selected_items = next(option["items"] for option in options if option["id"] == dataset)
+    items_by_id = {item["id"]: item for item in selected_items}
+
+    def report_progress(event):
+        item = items_by_id.get(event.get("item_id"), {})
+        visible = {key: event.get(key) for key in (
+            "model", "item_id", "status", "completed", "planned", "attempts", "prompt",
+            "reference_answer", "answer", "score_status", "correct", "explanation")}
+        visible.update(scorer=item.get("scorer"), rules=item.get("rules"),
+                       category=item.get("category"), variant=item.get("variant"))
+        progress.update(run=folder.name, event=visible)
+
     return start_worker(folder, action, *action_args,
-                        on_progress=lambda event: progress.update(run=folder.name, event={
-                            key: event.get(key) for key in ("model", "item_id", "status", "completed", "planned", "attempts")}))
+                         pair_ids=selected_pairs, on_progress=report_progress)
 
 
 @app.post("/demo")
@@ -284,9 +491,10 @@ def create_demo():
         from evaluation.runner import run
         RUNS.mkdir(exist_ok=True)
         fixture = RUNS / f"{folder.name}.fixtures.json"
-        fixture.write_text(json.dumps({"demo-fixture": {
-            "dr1-o": "B", "dr1-p": "B", "dm1-o": "7", "dm1-p": "7"}}), encoding="utf-8")
-        run(DATASETS / "dev.jsonl", fixture, folder, ["demo-fixture"])
+        fixture.write_text(json.dumps({"synthetic-a": {
+            "dr1-o": "B", "dr1-p": "A", "dm1-o": "7", "dm1-p": "7"},
+            "synthetic-b": {"dr1-o": "A", "dr1-p": "B", "dm1-o": "6", "dm1-p": "7"}}), encoding="utf-8")
+        return run(DATASETS / "dev.jsonl", fixture, folder, ["synthetic-a", "synthetic-b"])
 
     return start_worker(folder, demo)
 
@@ -295,7 +503,9 @@ def create_demo():
 def download(run_id):
     try:
         folder = safe_run_path(run_id)
-        load_run(folder)
+        saved = load_run(folder)
+        if not saved["csv_available"]:
+            raise ValueError("CSV is missing or inconsistent with saved records")
         path = safe_file(folder, "results.csv")
         # Do not follow a symlink if the CSV is replaced between validation and open.
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)

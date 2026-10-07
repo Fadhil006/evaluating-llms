@@ -12,13 +12,17 @@ from pathlib import Path
 from uuid import uuid4
 
 from .analysis import analyze, export_csv
-from .dataset import load_dataset, validate_dataset
+from .dataset import load_dataset, select_pairs
 
 DEFAULT_MODELS = ("fixture-a", "fixture-b")
 SYSTEM_PROMPT = "Answer the question accurately and concisely."
 PROMPT_TEMPLATE = "Question: {prompt}\nAnswer:"
 TEMPERATURE = 0
 MAX_TOKENS = 512
+SOFTWARE_VERSION = "0.1.0"
+SCHEMA_VERSION = 1
+PROTOCOL_VERSION = "1"
+INCOMPLETE_COUNTS = ("pending", "unscored", "invalid", "failures", "truncated", "rate_limited")
 
 
 def _json(value):
@@ -66,6 +70,11 @@ def _scorer_hash():
     return hashlib.sha256(Path(__file__).with_name("scoring.py").read_bytes()).hexdigest()
 
 
+def _incomplete(result, unresolved=0):
+    return bool(unresolved or any(counts.get(key, 0) for counts in result["models"].values()
+                                  for key in INCOMPLETE_COUNTS))
+
+
 @contextmanager
 def _locked(run_dir):
     run_dir = Path(run_dir)
@@ -103,6 +112,11 @@ def _config(items, models, synthetic, source):
     if len(splits) != 1:
         raise ValueError("mixed dev/test dataset; use a single split per run")
     return {"synthetic": synthetic, "source": source, "models": models,
+            "schema_version": SCHEMA_VERSION, "protocol_version": PROTOCOL_VERSION,
+            "software_version": SOFTWARE_VERSION,
+            "selected_pair_ids": list(dict.fromkeys(item["pair_id"] for item in items)),
+            "selected_item_ids": [item["id"] for item in items],
+            "unsupported_controls": ["seed", "top_p", "stop_sequences"],
             "dataset_hash": hashlib.sha256(_snapshot(items)).hexdigest(),
             "dataset_version": items[0]["dataset_version"], "split": splits.pop(),
             "scorer_version": _scorer_hash()}
@@ -154,6 +168,10 @@ def _reanalyze_unlocked(run_dir):
     items = load_dataset(snapshot)
     if {item["split"] for item in items} != {config["split"]}:
         raise ValueError("dataset split mismatch")
+    if ("selected_item_ids" in config and [item["id"] for item in items] != config["selected_item_ids"] or
+            "selected_pair_ids" in config and list(dict.fromkeys(item["pair_id"] for item in items)) !=
+            config["selected_pair_ids"] or items[0]["dataset_version"] != config["dataset_version"]):
+        raise ValueError("frozen dataset selection/version mismatch")
     by_id = {item["id"]: item for item in items}
     responses = _records(run_dir / "responses.jsonl")
     unresolved = (_validate_live_logs(config, items, _records(run_dir / "attempts.jsonl"), responses)
@@ -176,6 +194,7 @@ def _reanalyze_unlocked(run_dir):
     result = analyze(items, responses, scores, config["models"], synthetic=config["synthetic"],
                      source=config["source"])
     result["unresolved_attempts"] = unresolved
+    result["incomplete"] = _incomplete(result, unresolved)
     result["paused"] = bool(unresolved or responses and responses[-1]["status"] == "rate_limited" or
                              any(r.get("error") == "request_failed" for r in responses) or
                              config["source"] == "openrouter_live" and any(r.get("error") in
@@ -191,21 +210,23 @@ def _reanalyze_unlocked(run_dir):
     return result
 
 
-def run(dataset, fixtures, run_dir, models=DEFAULT_MODELS):
+def run(dataset, fixtures, run_dir, models=DEFAULT_MODELS, *, pair_ids=None):
     with _locked(run_dir):
-        return _run_unlocked(dataset, fixtures, Path(run_dir), models)
+        return _run_unlocked(dataset, fixtures, Path(run_dir), models, pair_ids)
 
 
-def _run_unlocked(dataset, fixtures, run_dir, models):
+def _run_unlocked(dataset, fixtures, run_dir, models, pair_ids=None):
     """Run local JSON fixture responses. A 429 saves progress and pauses."""
     models = list(models)
     if not models or len(models) != len(set(models)) or any(not isinstance(m, str) or not m for m in models):
         raise ValueError("models must be distinct nonempty labels")
     dataset, fixtures, run_dir = Path(dataset), Path(fixtures), Path(run_dir)
-    items = load_dataset(dataset)
-    validate_dataset(items)
+    items = select_pairs(load_dataset(dataset), pair_ids)
     config = {**_config(items, models, True, "offline_fixture"),
-              "fixtures_path": str(fixtures.resolve())}
+              "fixtures_path": str(fixtures.resolve()),
+              "generation_conditions": {"mode": "offline_fixture", "prompt_template": None,
+                                        "system_prompt": None, "temperature": None,
+                                        "max_tokens": None}}
     _prepare(run_dir, items, config)
     fixture_data = json.loads(fixtures.read_text(encoding="utf-8"))
     if not isinstance(fixture_data, dict):
@@ -256,12 +277,12 @@ def _run_unlocked(dataset, fixtures, run_dir, models):
     return result
 
 
-def run_live(dataset, run_dir, model, provider, max_requests=4):
+def run_live(dataset, run_dir, model, provider, max_requests=4, *, pair_ids=None):
     with _locked(run_dir):
-        return _run_live_unlocked(dataset, Path(run_dir), model, provider, max_requests)
+        return _run_live_unlocked(dataset, Path(run_dir), model, provider, max_requests, pair_ids)
 
 
-def run_live_comparison(dataset, run_dir, models, providers, max_requests, on_progress=None):
+def run_live_comparison(dataset, run_dir, models, providers, max_requests, on_progress=None, *, pair_ids=None):
     """Run two pinned free models against one frozen dataset and shared budget."""
     from .openrouter import FREE_MODELS
 
@@ -276,10 +297,11 @@ def run_live_comparison(dataset, run_dir, models, providers, max_requests, on_pr
     with _locked(run_dir):
         return _run_live_models_unlocked(dataset, Path(run_dir), list(models),
                                          {model: providers[model].strip() for model in models},
-                                         max_requests, comparison=True, on_progress=on_progress)
+                                          max_requests, comparison=True, on_progress=on_progress,
+                                          pair_ids=pair_ids)
 
 
-def run_opencode_comparison(dataset, run_dir, models, max_requests, on_progress=None):
+def run_opencode_comparison(dataset, run_dir, models, max_requests, on_progress=None, *, pair_ids=None):
     """Run two local OpenCode free-labeled models with durable capped attempts."""
     from .opencode import ALLOWED_MODELS
 
@@ -289,22 +311,22 @@ def run_opencode_comparison(dataset, run_dir, models, max_requests, on_progress=
         raise ValueError("exactly two distinct allowed OpenCode free models required")
     with _locked(run_dir):
         return _run_live_models_unlocked(dataset, Path(run_dir), list(models), None,
-                                         max_requests, comparison=True, on_progress=on_progress,
-                                         runtime="opencode")
+                                          max_requests, comparison=True, on_progress=on_progress,
+                                          runtime="opencode", pair_ids=pair_ids)
 
 
-def _run_live_unlocked(dataset, run_dir, model, provider, max_requests):
+def _run_live_unlocked(dataset, run_dir, model, provider, max_requests, pair_ids=None):
     """Opt-in live run; unresolved attempts block all automatic redispatch."""
     from .openrouter import FREE_MODELS
 
     if model not in FREE_MODELS or not isinstance(provider, str) or not provider.strip():
         raise ValueError("explicit allowed :free model and nonempty provider required")
     return _run_live_models_unlocked(dataset, run_dir, [model], {model: provider.strip()},
-                                     max_requests)
+                                      max_requests, pair_ids=pair_ids)
 
 
 def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
-                              comparison=False, on_progress=None, runtime="openrouter"):
+                               comparison=False, on_progress=None, runtime="openrouter", pair_ids=None):
     """Dispatch with one cumulative budget; never retry an unresolved attempt."""
     if runtime == "opencode":
         from .opencode import generate
@@ -317,16 +339,25 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
     if runtime == "openrouter" and not os.environ.get("OPENROUTER_API_KEY", "").strip():
         raise ValueError("OPENROUTER_API_KEY is required")
     dataset, run_dir = Path(dataset), Path(run_dir)
-    items = load_dataset(dataset)
+    items = select_pairs(load_dataset(dataset), pair_ids)
     if runtime == "opencode":
         config = {**_config(items, models, False, "opencode_live"), "runtime": "opencode",
                   "prompt_template": PROMPT_TEMPLATE, "agent": "build", "pure": True,
-                  "format": "json", "permission": {"*": "deny"}, "timeout_seconds": 120}
+                   "format": "json", "permission": {"*": "deny"}, "timeout_seconds": 120,
+                   "generation_conditions": {"mode": "opencode", "prompt_template": PROMPT_TEMPLATE,
+                                             "agent": "build", "pure": True, "format": "json",
+                                             "permission": {"*": "deny"}, "timeout_seconds": 120,
+                                             "system_prompt": None, "temperature": None,
+                                             "max_tokens": None}}
     else:
         config = {**_config(items, models, False, "openrouter_live"),
                   "system_prompt": SYSTEM_PROMPT, "prompt_template": PROMPT_TEMPLATE,
                   "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS,
-                  "code_version": "0.1.0"}
+                   "code_version": SOFTWARE_VERSION,
+                   "generation_conditions": {"mode": "openrouter", "system_prompt": SYSTEM_PROMPT,
+                                             "prompt_template": PROMPT_TEMPLATE,
+                                             "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS,
+                                             "require_free": True, "provider_pinning": providers}}
         if comparison:
             config["providers"] = providers
         else:
@@ -428,7 +459,7 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
                              "correct": saved_score["correct"] if saved_score else None,
                              "explanation": saved_score["explanation"] if saved_score else None,
                              "completed": sum(r["status"] != "rate_limited" for r in responses),
-                             "planned": len(items) * 2, "attempts": len(attempts),
+                              "planned": len(items) * len(models), "attempts": len(attempts),
                              "summary": result.copy()})
             if runtime == "openrouter" and (status == "rate_limited" or error in
                     ("returned model differs from requested ID", "reported cost is positive",
@@ -439,8 +470,9 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
                 break
         if paused:
             break
-    result["paused"] = paused
+    result["paused"] = paused or result["paused"]
     result["unresolved_attempts"] = sum(a["attempt_id"] not in
                                         {r.get("attempt_id") for r in responses} for a in attempts)
+    result["incomplete"] = _incomplete(result, result["unresolved_attempts"])
     _write(run_dir / "summary.json", result)
     return result
