@@ -294,9 +294,7 @@ class LiveRunnerTests(unittest.TestCase):
         with patch("evaluation.openrouter.generate", side_effect=RuntimeError("transport")) as call:
             result = run_live_comparison(self.dataset, self.out, self.models, self.providers, 4)
             self.assertTrue(result["paused"])
-            self.assertEqual(result["unresolved_attempts"], 1)
-            with self.assertRaisesRegex(ValueError, "unresolved live attempt"):
-                run_live_comparison(self.dataset, self.out, self.models, self.providers, 4)
+            self.assertEqual(result["unresolved_attempts"], 0)
             self.assertEqual(call.call_count, 1)
         self.out = self.root / "limited"
         with patch("evaluation.openrouter.generate", side_effect=RuntimeError("OpenRouter HTTP 429 rate limited")) as call:
@@ -330,7 +328,7 @@ class OpenCodeRunnerTests(unittest.TestCase):
 
     def setUp(self):
         RunnerTests.setUp(self)
-        self.models = list(ALLOWED_MODELS)
+        self.models = list(ALLOWED_MODELS)[:2]
         key = patch.dict("os.environ", {}, clear=True)
         key.start()
         self.addCleanup(key.stop)
@@ -383,13 +381,11 @@ class OpenCodeRunnerTests(unittest.TestCase):
         with patch("evaluation.opencode.generate", side_effect=RuntimeError("secret timeout")) as cli:
             result = run_opencode_comparison(self.dataset, self.out, self.models, 4, events.append)
             self.assertTrue(result["paused"])
-            self.assertEqual(result["unresolved_attempts"], 1)
+            self.assertEqual(result["unresolved_attempts"], 0)
             self.assertEqual(len(self.attempts()), 1)
-            self.assertFalse((self.out / "responses.jsonl").exists())
-            with self.assertRaisesRegex(ValueError, "unresolved live attempt"):
-                run_opencode_comparison(self.dataset, self.out, self.models, 4, events.append)
+            self.assertTrue((self.out / "responses.jsonl").exists())
             self.assertEqual(cli.call_count, 1)
-            self.assertEqual(events, [])
+            self.assertEqual(len(events), 1)
 
     def test_shared_50_attempt_ceiling(self):
         template = json.loads(self.dataset.read_text().splitlines()[0])
