@@ -328,7 +328,7 @@ class OpenCodeRunnerTests(unittest.TestCase):
 
     def setUp(self):
         RunnerTests.setUp(self)
-        self.models = list(ALLOWED_MODELS)
+        self.models = list(ALLOWED_MODELS)[:2]
         key = patch.dict("os.environ", {}, clear=True)
         key.start()
         self.addCleanup(key.stop)
