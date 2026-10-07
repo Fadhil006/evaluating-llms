@@ -77,7 +77,14 @@ def preflight(max_requests: int) -> dict:
             raise ValueError("Invalid OpenRouter key quota")
         _nonnegative_number(remaining)
         _nonnegative_number(limit)
-        spend_limit = _nonnegative_number(data["limit"])
+        # OpenRouter leaves the spend cap unset on some confirmed free-tier keys.
+        # A billable or unknown tier still needs a positive, explicit cap.
+        spend_limit = data.get("limit")
+        if spend_limit is None:
+            if data.get("is_free_tier") is not True:
+                raise ValueError("Missing OpenRouter key spending cap")
+        else:
+            spend_limit = _nonnegative_number(spend_limit)
         spend_remaining = data.get("limit_remaining")
         if spend_remaining is not None:
             spend_remaining = _nonnegative_number(spend_remaining)

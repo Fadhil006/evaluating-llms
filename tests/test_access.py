@@ -100,6 +100,41 @@ class AccessTests(unittest.TestCase):
             opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
             self.assertEqual(preflight(48)["free_remaining"], 48)
 
+    def test_confirmed_free_tier_does_not_need_spending_cap(self):
+        os.environ["OPENROUTER_API_KEY"] = SECRET
+        data = {"data": {"is_free_tier": True,
+                         "free_model_daily_requests": {"remaining": 50, "limit": 50},
+                         "limit": None, "limit_remaining": None}}
+        with patch("evaluation.access.build_opener") as opener:
+            opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
+            self.assertEqual(preflight(4), {"free_remaining": 50, "free_limit": 50,
+                                            "spend_limit": None, "spend_remaining": None})
+            del data["data"]["limit"]
+            opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
+            self.assertIsNone(preflight(4)["spend_limit"])
+
+            data["data"]["free_model_daily_requests"]["remaining"] = 3
+            opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
+            with self.assertRaisesRegex(ValueError, "quota"):
+                preflight(4)
+
+            data["data"]["free_model_daily_requests"]["remaining"] = 50
+            data["data"]["limit_remaining"] = 0
+            opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
+            with self.assertRaisesRegex(ValueError, "quota"):
+                preflight(4)
+
+    def test_unconfirmed_tier_still_needs_spending_cap(self):
+        os.environ["OPENROUTER_API_KEY"] = SECRET
+        with patch("evaluation.access.build_opener") as opener:
+            for tier in (False, None, 1, "true"):
+                data = {"data": {"is_free_tier": tier,
+                                 "free_model_daily_requests": {"remaining": 50, "limit": 50},
+                                 "limit": None}}
+                opener.return_value.open.return_value.__enter__.return_value = io.BytesIO(json.dumps(data).encode())
+                with self.subTest(tier=tier), self.assertRaisesRegex(ValueError, "quota"):
+                    preflight(4)
+
     def test_invalid_missing_or_insufficient_quotas_fail_closed(self):
         self.write_env(f"OPENROUTER_API_KEY=\"{SECRET}\"\n")
         with patch("evaluation.access.build_opener") as opener:

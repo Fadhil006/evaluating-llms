@@ -106,7 +106,7 @@ class DashboardTests(unittest.TestCase):
                 page = submit(page)
                 self.assertFalse(page.exception)
                 self.assertFalse(any("SECRET" in error.value for error in page.error))
-                self.assertTrue(any("missing spend limit" in error.value for error in page.error))
+                self.assertTrue(any("Paid or unverified accounts" in error.value for error in page.error))
                 live.assert_not_called()
 
                 access.preflight.side_effect = None

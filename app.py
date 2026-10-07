@@ -55,7 +55,7 @@ def control_panel():
         opencode = backend == "OpenCode (free-labeled)"
         choices = OPENCODE_MODELS if opencode else MODEL_PROVIDERS
         st.caption("OpenCode uses your existing provider login; 'free' labels may still use billable quota and there is no verified spend-cap check." if opencode else
-                   "OpenRouter uses a local key and checks free-request quota and your key's spend limit before starting. A free listing is not a billing guarantee.")
+                   "OpenRouter checks your local key and free-request quota before starting. Paid accounts also need a positive key spend cap. A free model listing is not a billing guarantee.")
         with st.form("live_run", clear_on_submit=False):
             a, b = st.columns(2)
             dataset = a.selectbox("Dataset", ["dev.jsonl", "benchmark.jsonl"],
@@ -110,7 +110,7 @@ def control_panel():
             if not isinstance(access, dict) or access.get("allowed") is False or access.get("ok") is False:
                 raise ValueError("preflight denied")
         except Exception:
-            st.error("OpenRouter access check blocked this run; no model request was started. Check your local key, remaining free requests and key spend limit in your OpenRouter account. A missing spend limit can block the check. You can lower the shared cap or try the offline demo; only retry after checking your account.")
+            st.error("OpenRouter access check blocked this run; no model request was started. Check your local key and remaining free requests. Paid or unverified accounts also need a positive key spend cap. You can lower the shared cap or try the offline demo; retry after checking your account.")
             return
         st.success(f"OpenRouter access check passed · shared cap {int(cap)} attempts for both models, including prior attempts · pinned routes: "
                    + " · ".join(f"{MODEL_NAMES[model]} → {MODEL_PROVIDERS[model]}" for model in models) + ".")
@@ -121,6 +121,8 @@ def control_panel():
                     if type(access.get(key)) in (int, float)]
         if metadata:
             st.caption(" · ".join(metadata))
+        if access.get("spend_limit") is None and type(access.get("free_remaining")) is int:
+            st.caption("OpenRouter confirmed this is a free-tier key; no key spend cap was reported.")
     else:
         st.info("OpenCode · no verified quota or spend-cap preflight. Requests start only after your confirmation above.")
     progress_area = st.empty()
