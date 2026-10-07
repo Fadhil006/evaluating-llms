@@ -38,6 +38,16 @@ MODEL_PROVIDERS = {
 OPENCODE_MODELS = {
     "opencode/ling-3.1-flash-free": "Ling 3.1 Flash",
     "opencode/nemotron-3-ultra-free": "Nemotron 3 Ultra",
+    "opencode/big-pickle": "Big Pickle",
+    "opencode/space-bunny-free": "Space Bunny Free",
+    "opencode/longcat-2.5-preview-free": "LongCat 2.5 Preview Free",
+    "opencode/exo-free": "Exo Free",
+    "opencode/fledge-alpha-free": "Fledge Alpha Free",
+    "opencode/mimo-v2.6-flash-free": "MiMo-V2.6-Flash Free",
+    "opencode/mimo-v2.5-free": "MiMo-V2.5 Free",
+    "opencode/ling-3.0-flash-fin-free": "Ling 3.0 Flash Fin Free",
+    "opencode/nemotron-3.5-lightning-free": "Nemotron 3.5 Lightning Free",
+    "opencode/muse-spark-1.3-contributor-free": "Muse Spark 1.3 Contributor Free",
 }
 BACKENDS = {
     "OpenRouter": [{"id": key, "label": f"{label} · {MODEL_PROVIDERS[key]}"}
@@ -304,9 +314,15 @@ def index():
     notice = next((text for category, text in messages if category == "notice"), None)
     error = error or next((text for category, text in messages if category == "error"), None)
     busy = worker_lock.locked()
-    run_progress = ({"run_id": selected_id, "busy": busy, "event": progress["event"],
-                     "notice": progress["notice"]}
-                    if selected_id == progress["run"] else None)
+    if selected_id == progress["run"]:
+        run_progress = {"run_id": selected_id, "busy": busy, "event": progress["event"],
+                        "notice": progress["notice"]}
+    elif selected and (selected["summary"].get("paused") or selected["summary"].get("unresolved_attempts")):
+        unresolved = selected["summary"].get("unresolved_attempts", 0)
+        run_progress = {"run_id": selected_id, "busy": False, "event": None,
+                        "notice": f"Saved records show {unresolved} unresolved attempt(s). Delivery is unknown; no automatic retry was made."}
+    else:
+        run_progress = None
     if selected_id == progress["run"]:
         event = progress["event"]
         if busy and event:

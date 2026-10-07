@@ -54,8 +54,10 @@
             <div><h3>Saved response &amp; evaluation</h3><p><strong>Reference:</strong></p><p class="verbatim">{{ event.reference_answer | default('Not available', true) }}</p><p><strong>Outcome:</strong> {{ event.status }} · {{ event.score_status | default('not objectively scored', true) }}{% if event.correct is defined and event.correct is not none %} · {{ 'pass' if event.correct else 'fail' }}{% endif %}</p>{% if event.answer is not none %}<pre class="verbatim">{{ event.answer }}</pre>{% else %}<p>No answer was saved for this outcome.</p>{% endif %}{% if event.explanation %}<p><strong>Scoring explanation:</strong> {{ event.explanation }}</p>{% endif %}</div>
           </div>
           <p class="field-hint">This panel updates from saved response events. Refreshing it reads local run files only and never resends a request.</p>
+          {% if run_progress.notice and not run_progress.busy %}<p class="message caution" role="status">{{ run_progress.notice }}</p>{% endif %}
         </div>
-        {% else %}<p class="progress-wait">The run has started. Waiting for the first response to be durably saved before displaying it; this page will refresh while the worker is active.</p>{% endif %}
+        {% elif run_progress.busy %}<p class="progress-wait">The run has started. Waiting for the first response to be durably saved before displaying it; this page will refresh while the worker is active.</p>
+        {% else %}<div class="message danger" role="alert"><strong>{% if selected and selected['responses'] %}Run paused before all outcomes were saved.{% else %}Run ended before a response was saved.{% endif %}</strong><span>{{ run_progress.notice | default('No saved response event was received.', true) }} Inspect the unresolved attempt and provider state before deciding whether to start a new run. No request was automatically retried.</span></div>{% endif %}
       </section>
       {% endif %}
 

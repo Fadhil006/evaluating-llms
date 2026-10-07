@@ -145,6 +145,18 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("SAVED RAW ANSWER", text)
         self.assertIn("4 / 4", text)
 
+    def test_finished_without_saved_response_shows_paused_state_not_waiting(self):
+        self.save_run()
+        old_progress = dashboard.progress.copy()
+        self.addCleanup(lambda: dashboard.progress.update(old_progress))
+        dashboard.progress.update(run="sample", event=None,
+                                  notice="Run paused. Inspect saved attempts before retrying.")
+        page = self.client.get("/?run=sample")
+        text = page.get_data(as_text=True)
+        self.assertIn("Run paused before all outcomes were saved", text)
+        self.assertIn("Run paused. Inspect saved attempts", text)
+        self.assertNotIn("Waiting for the first response", text)
+
     def test_rejected_submissions_never_check_access_or_dispatch(self):
         with patch("evaluation.access.preflight") as preflight, patch(
                 "evaluation.runner.run_live_comparison") as router, patch(
