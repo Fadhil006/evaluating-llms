@@ -96,14 +96,16 @@ class LiveTests(unittest.TestCase):
         self.generate.side_effect = RuntimeError("private-test-key timeout uncertain")
         result = self.live()
         self.assertTrue(result["paused"])
-        self.assertEqual(result["unresolved_attempts"], 1)
-        self.assertEqual(reanalyze(self.out)["unresolved_attempts"], 1)
+        self.assertEqual(result["unresolved_attempts"], 0)
+        self.assertEqual(reanalyze(self.out)["unresolved_attempts"], 0)
         self.assertTrue(json.loads((self.out / "summary.json").read_text())["paused"])
-        self.assertFalse((self.out / "responses.jsonl").exists())
-        with self.assertRaisesRegex(ValueError, "unresolved live attempt"):
-            self.live()
-        self.assertEqual(self.generate.call_count, 1)
+        self.assertTrue((self.out / "responses.jsonl").exists())
+        responses = self.records("responses.jsonl")
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0]["status"], "error")
         self.assertNotIn("private-test-key", (self.out / "attempts.jsonl").read_text())
+        self.assertNotIn("private-test-key", (self.out / "responses.jsonl").read_text())
+        self.assertEqual(self.generate.call_count, 1)
 
     def test_failure_truncation_and_malformed_log_fail_closed(self):
         self.generate.side_effect = [RuntimeError("OpenRouter HTTP 5xx (503)"),

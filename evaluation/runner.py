@@ -177,6 +177,7 @@ def _reanalyze_unlocked(run_dir):
                      source=config["source"])
     result["unresolved_attempts"] = unresolved
     result["paused"] = bool(unresolved or responses and responses[-1]["status"] == "rate_limited" or
+                             any(r.get("error") == "request_failed" for r in responses) or
                              config["source"] == "openrouter_live" and any(r.get("error") in
                             ("returned model differs from requested ID", "reported cost is positive",
                              "returned provider differs from requested slug") for r in responses))
@@ -370,12 +371,13 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
                     status, error = "error", "HTTP 5xx" if "5xx" in message else "HTTP 4xx"
                 else:
                     # Timeout/transport/unknown failure may have reached the provider.
+                    status, error = "error", "request_failed"
                     paused = True
-                    break
                 reply = None
             except Exception:
+                status, error = "error", "request_failed"
                 paused = True
-                break
+                reply = None
             else:
                 if runtime == "opencode":
                     status, error = "ok", None
@@ -432,6 +434,8 @@ def _run_live_models_unlocked(dataset, run_dir, models, providers, max_requests,
                     ("returned model differs from requested ID", "reported cost is positive",
                      "returned provider differs from requested slug")):
                 paused = True
+                break
+            if paused:
                 break
         if paused:
             break
