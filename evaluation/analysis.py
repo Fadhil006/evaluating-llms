@@ -69,7 +69,8 @@ def analyze(items, responses, scores, models, *, synthetic=True, source="offline
             pair = pairs.setdefault(item["pair_id"], {})
             pair[item["variant"]] = item["id"]
         complete = [(objective[(model, pair["original"])], objective[(model, pair["paraphrase"])])
-                    for pair in pairs.values() if (model, pair["original"]) in objective
+                    for pair in pairs.values() if {"original", "paraphrase"} <= pair.keys()
+                    and (model, pair["original"]) in objective
                     and (model, pair["paraphrase"]) in objective]
         orig_correct = sum(original for original, _ in complete)
         variant_correct = sum(variant for _, variant in complete)
@@ -81,7 +82,41 @@ def analyze(items, responses, scores, models, *, synthetic=True, source="offline
                             "original_correct_variant_wrong": sum(o and not v for o, v in complete),
                             "original_wrong_variant_correct": sum(not o and v for o, v in complete)}
         summaries[model] = overall
-    return {"synthetic": synthetic, "source": source, "models": summaries}
+
+    # Comparison metrics use only item IDs objectively scored for every model.
+    matched = {item_id for item_id in by_id
+               if all((model, item_id) in score_by_key and
+                      score_by_key[(model, item_id)]["status"] == "scored" and
+                      type(score_by_key[(model, item_id)]["correct"]) is bool
+                      for model in models)}
+    matched_by_category = {}
+    for category in sorted({item["category"] for item in items}):
+        category_ids = {item["id"] for item in items
+                        if item["category"] == category and item["id"] in matched}
+        matched_by_category[category] = {
+            model: {"scored": len(category_ids),
+                    "correct": sum(score_by_key[(model, item_id)]["correct"]
+                                   for item_id in category_ids),
+                    "accuracy": (sum(score_by_key[(model, item_id)]["correct"]
+                                     for item_id in category_ids) / len(category_ids)
+                                 if category_ids else None)}
+            for model in models
+        }
+    comparison = {"matched_questions": len(matched),
+                  "models": {model: {
+                      "scored": len(matched),
+                      "correct": sum(score_by_key[(model, item_id)]["correct"] for item_id in matched),
+                      "accuracy": (sum(score_by_key[(model, item_id)]["correct"]
+                                       for item_id in matched) / len(matched) if matched else None)}
+                      for model in models},
+                  "categories": matched_by_category}
+    if len(models) == 2:
+        accuracies = [comparison["models"][model]["accuracy"] for model in models]
+        comparison["accuracy_difference_pp"] = (100 * (accuracies[0] - accuracies[1])
+                                                   if all(value is not None for value in accuracies)
+                                                   else None)
+    return {"synthetic": synthetic, "source": source, "models": summaries,
+            "matched_comparison": comparison}
 
 
 CSV_FIELDS = ("synthetic", "source", "model", "item_id", "pair_id", "variant", "split",

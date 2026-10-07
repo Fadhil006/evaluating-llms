@@ -69,6 +69,26 @@ class AnalysisTests(unittest.TestCase):
         self.assertIsNone(result["pairs"]["original_minus_variant_pp"])
         self.assertEqual(result["pairs"]["complete"], 0)
 
+    def test_model_comparison_uses_only_shared_scored_questions(self):
+        items = [{"id": item_id, "pair_id": item_id, "variant": "original",
+                  "category": category, "split": "test"}
+                 for item_id, category in (("q1", "math"), ("q2", "math"), ("q3", "reasoning"))]
+        responses = [{"model": model, "item_id": item_id, "status": "ok"}
+                     for model, ids in (("a", ("q1", "q2")), ("b", ("q1", "q3")))
+                     for item_id in ids]
+        scores = [{"model": "a", "item_id": "q1", "status": "scored", "correct": True},
+                  {"model": "a", "item_id": "q2", "status": "scored", "correct": False},
+                  {"model": "b", "item_id": "q1", "status": "scored", "correct": False},
+                  {"model": "b", "item_id": "q3", "status": "scored", "correct": True}]
+        summary = analyze(items, responses, scores, ["a", "b"])
+        comparison = summary["matched_comparison"]
+        self.assertEqual(comparison["matched_questions"], 1)
+        self.assertEqual(comparison["models"]["a"], {"scored": 1, "correct": 1, "accuracy": 1.0})
+        self.assertEqual(comparison["models"]["b"], {"scored": 1, "correct": 0, "accuracy": 0.0})
+        self.assertEqual(comparison["accuracy_difference_pp"], 100.0)
+        self.assertEqual(comparison["categories"]["math"]["b"]["scored"], 1)
+        self.assertIsNone(comparison["categories"]["reasoning"]["a"]["accuracy"])
+
     def test_csv_escapes_formula_cells_without_changing_responses_or_counts(self):
         items = [{"id": variant, "pair_id": "p", "variant": variant,
                   "category": "reasoning", "split": "test"}

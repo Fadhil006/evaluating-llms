@@ -1,10 +1,12 @@
 # Evaluating Large Language Models
 
-An offline, Python-stdlib fixture runner and an explicit opt-in live CLI for a proposed comparison of accuracy, robustness, and response reliability. The active target is [`plan.md`](plan.md); [`BUILD_PLAN.md`](BUILD_PLAN.md) describes an older, narrower roadmap. Neither is evidence of measured model performance. The survey in [`sources/ai_project.md`](sources/ai_project.md) is read-only reference material.
+An evaluation framework for controlled, reproducible comparisons on project-authored question sets. It provides validated development/held-out datasets, synthetic offline fixtures, explicit opt-in live execution, deterministic/proxy scoring, saved run records, paraphrase analysis, a Streamlit dashboard, a CLI, history, and CSV export. It is not a generic chatbot.
 
-## Intended scope
+**Measured results pending.** Existing offline runs are synthetic fixtures, not actual model outputs. The repository currently contains no completed successful live comparison, so it makes no measured accuracy, latency, or model-winner claim. See [`protocol.md`](protocol.md) for the implemented evaluation rules and limitations.
 
-The proposed categories are General Reasoning, Mathematics, Coding, Knowledge, Summarization, and Instruction Following. The four **candidate** OpenRouter free-tier IDs from `plan.md` are:
+## Implemented scope and current status
+
+The datasets cover reasoning, mathematics, coding, knowledge, summarization, and instruction following. The held-out v1.0 dataset contains 12 base questions plus 12 paired paraphrases (24 items); the separate dev dataset is for development only. Current live OpenRouter choices are allowlisted exact IDs, not verified benchmark results:
 
 | Candidate | Proposed ID |
 | --- | --- |
@@ -13,9 +15,9 @@ The proposed categories are General Reasoning, Mathematics, Coding, Knowledge, S
 | Qwen 3.8 27B | `qwen/qwen3.8-27b:free` |
 | Cohere North Mini Code | `cohere/north-mini-code:free` |
 
-On 2026-10-05, the official public catalog returned 404 for the plan's former Nemotron ID and listed the replacement above; the other three IDs were listed with zero prompt/completion prices. Catalog listings are **not endpoint tests**: no measured model results are available. Confirm endpoint availability, routing, supported settings, quotas, and actual billing before live requests. Fixed IDs do not guarantee immutable hosted weights; cached responses replay historical outputs, not fresh independent samples.
+Catalog listings are **not endpoint tests**. Confirm endpoint availability, routing, supported settings, quotas, and billing before live requests. Fixed IDs do not guarantee immutable hosted weights. The live CLI runs one model per run; Streamlit compares exactly two models. The OpenCode route has different controls and is not provider-equivalent to OpenRouter.
 
-Official catalog evidence: [Nemotron](https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free), [Gemma](https://openrouter.ai/google/gemma-4-31b-it:free), [Qwen](https://openrouter.ai/qwen/qwen3.8-27b:free), [Cohere](https://openrouter.ai/cohere/north-mini-code:free); [public model catalog API](https://openrouter.ai/api/v1/models). Catalog metadata is time-dependent; these links do not establish successful generation requests.
+Official catalog links: [Nemotron](https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free), [Gemma](https://openrouter.ai/google/gemma-4-31b-it:free), [Qwen](https://openrouter.ai/qwen/qwen3.8-27b:free), [Cohere](https://openrouter.ai/cohere/north-mini-code:free); [public model catalog API](https://openrouter.ai/api/v1/models). Catalog metadata is time-dependent; these links do not establish successful generation requests.
 
 ## Offline fixture run (Python 3.11+)
 
@@ -71,15 +73,18 @@ Only after inspecting that separate dev run and confirming quota/route again, op
 python -m evaluation --live --dataset datasets/v1.0/benchmark.jsonl --run-dir runs/gemma-benchmark-live --model google/gemma-4-31b-it:free --provider google-ai-studio --max-requests 24
 ```
 
-The live **CLI** still handles one model per run (`--max-requests` up to 40); the **website** can compare two models in one saved run (shared cap up to 50). Attempts count cumulatively, including retries, not per invocation. HTTP 429 stops the run; unresolved attempts require manual inspection of saved logs and provider state before any retry, never automatic redispatch. The 12 base pairs are exploratory, not a robust leaderboard; coding and summarization checks are proxies only, not functional correctness scores. **Measured results are pending.** See [`protocol.md`](protocol.md) for the proposed evaluation protocol.
+The live **CLI** still handles one model per run (`--max-requests` up to 40); the **website** can compare two models in one saved run (shared cap up to 50). Attempts count cumulatively, including retries, not per invocation. HTTP 429 stops the run; unresolved attempts require manual inspection of saved logs and provider state before any retry, never automatic redispatch. The 12 base pairs are exploratory, not a robust leaderboard; coding and summarization checks are proxies only, not functional correctness scores. **Measured results are pending.** See [`protocol.md`](protocol.md) for the implemented protocol.
 
-## Research references
+# References
 
-These papers inform the choice of evaluation questions and the limits of interpreting scores. The prompts, reference answers, scoring rules, and any saved results in this repository are project-authored; the papers are not the source of this dataset or evidence that the candidate models performed well.
+These sources inform evaluation design and interpretation. The dataset items, prompts, references, and scoring rules here are project-authored. The cited benchmarks are related work, not benchmarks imported or reproduced by this app; their results do not establish performance of any model in this repository.
 
-- Chang et al. (2024), [*A Survey on Evaluation of Large Language Models*](https://doi.org/10.1145/3641289) ([local text](sources/ai_project.md)). Surveys what, where, and how to evaluate LLMs across tasks, methods, and benchmarks.
-- Cao et al. (2025), [*Toward Generalizable Evaluation in the LLM Era: A Survey Beyond Benchmarks*](https://arxiv.org/abs/2504.18838). Discusses capability-based and automated evaluation, and why bounded test sets may not generalize to broader abilities.
-- Ni et al. (2025), [*A Survey on Large Language Model Benchmarks*](https://arxiv.org/abs/2508.15361). Reviews benchmark categories and limitations including contamination and cultural or linguistic bias.
-- Mohammadi et al. (2025), [*Evaluation and Benchmarking of LLM Agents: A Survey*](https://arxiv.org/abs/2507.21504). Covers agent behavior, reliability, and evaluation processes; agent workflows are outside this app's current single-answer evaluation.
+1. Chang et al. (2024), [“A Survey on Evaluation of Large Language Models”](https://doi.org/10.1145/3641289) ([local text](sources/ai_project.md)). Broad overview of tasks, methods, and evaluation benchmarks; motivates reporting task and method explicitly.
+2. Zheng et al. (2023), [“Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena”](https://arxiv.org/abs/2306.05685). Introduces MT-Bench and studies model-based judging and its biases. This project does not implement an LLM judge; the work is cited as relevant context, not an implemented method.
+3. Chiang et al. (2024), [“Chatbot Arena: An Open Platform for Evaluating LLMs by Human Preference”](https://arxiv.org/abs/2403.04132). Human preference evaluation context; this project instead applies item-level objective/proxy scoring and does not claim Arena-style preference judgments.
+4. Liang et al. (2023), [“Holistic Evaluation of Language Models” (HELM)](https://arxiv.org/abs/2211.09110). Supports transparent, multi-metric reporting and explicit scenario coverage; this project is much smaller and does not reproduce HELM.
+5. Wang et al. (2023), [“PandaLM: An Automatic Evaluation Benchmark for LLM Instruction Tuning Optimization”](https://arxiv.org/abs/2306.05087). Relevant to automatic evaluation of instruction-following systems; this project does not use PandaLM or its judge.
+6. Dubois et al. (2024), [“Length-Controlled AlpacaEval: A Simple Way to Debias Automatic Evaluators”](https://arxiv.org/abs/2404.04475). Illustrates sensitivity/bias in automatic preference evaluation; no AlpacaEval method or judge is implemented here.
+7. [OpenRouter API documentation](https://openrouter.ai/docs/api-reference/overview) and [model catalog API](https://openrouter.ai/api/v1/models). Provider integration and dynamic model-catalog information; catalog presence does not guarantee successful requests, fixed weights, or zero billing.
 
-For the project's interpretation of these papers, see [`project_overview.md`](project_overview.md). For the proposed experiment and scoring rules, see [`protocol.md`](protocol.md).
+For implemented scoring and limitations, see [`protocol.md`](protocol.md). For the survey's project-specific interpretation, see [`project_overview.md`](project_overview.md).

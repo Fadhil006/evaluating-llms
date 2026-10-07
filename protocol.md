@@ -1,32 +1,52 @@
-# Preliminary offline evaluation protocol
+# Evaluation protocol (implemented)
 
-**Status:** Day 1 design freeze, not an executed experiment. This document records initial rules to implement and test before inspecting held-out model outputs. Dataset, provider access, key, model availability, and any live run remain pending. The active scope comes from [`plan.md`](plan.md); see [`README.md`](README.md) for the six intended categories and four unverified candidate IDs.
+**Status:** The software and offline fixture workflow are implemented. Completed measured model results are still pending: the repository contains no successful live model responses. Offline fixture runs are synthetic demonstrations and must not be reported as benchmark measurements.
 
-## Research question and comparison
+## Dataset and split
 
-Compare model performance across General Reasoning, Mathematics, Coding, Knowledge, Summarization, and Instruction Following on identical items. Report paraphrase sensitivity where reviewed original/variant pairs exist. Use fixed, explicitly named models after availability checks; never use a rotating model selector for comparative results. Apply the same prompt template, system instruction, generation settings, scoring version, and item set to each model when supported; record unsupported settings and actual routing rather than assuming identical provider behavior. Fixed IDs do not guarantee immutable hosted weights, and temperature 0 does not ensure deterministic outputs. A cached response is historical replay, not a fresh independent sample; repetitions must make new requests and record their conditions.
+Datasets are UTF-8 JSONL. `datasets/v1.0/dev.jsonl` is for development/debugging; `datasets/v1.0/benchmark.jsonl` is the held-out `test` split and is reserved for final evaluation. Each file is validated before a run. Do not tune prompts, rules, or references using held-out outputs. Each base item and its paraphrase share pair ID, split, category, scorer, reference answer, rules, source, and version. The held-out v1.0 set contains 12 base questions and 12 paraphrases (24 items), two base pairs in each of six categories. This is a small exploratory set, not a leaderboard-grade sample.
 
-## Split and item policy (frozen preliminarily)
+The validator rejects malformed/duplicate IDs and prompts, unsupported category/scorer combinations, invalid rules, mixed versions, missing or duplicate pair variants, and inconsistent pairs. A run uses one split only. Dataset content is copied to `dataset.jsonl` and SHA-256 hashed in `config.json`; reusing a run directory with different inputs is rejected.
 
-- Keep separate development and held-out evaluation sets. Debug prompts, scorers, and parser behavior only on development items; do not move inspected development items into the held-out set.
-- Keep each base question and all paraphrase/typo variants together in one split. Give every item a stable ID, pair/base ID, category, source/license, reference answer, scorer/rubric version, and dataset version. Check references and variant meaning manually before freezing the evaluation set.
-- Freeze held-out items, answers, variants, split assignment, scoring rules, and prompt/settings before viewing their model outputs. Corrections afterward require a new dataset/protocol version and an explicit change log; preserve prior records. Planned sizes are not yet committed or achieved.
-- Compare only matched successfully answered items across models; report missing pairs, request failures, refusals, and truncations separately, never as automatically wrong answers. Calculate original-minus-variant accuracy in percentage points only on complete pairs, with denominators shown.
+## Run configuration and prompts
 
-## Preliminary scoring rules (frozen before data collection)
+Run configuration is written once and cannot be changed in place; use a new run directory for changed settings. It records synthetic/live source, models, dataset hash and version, split, scorer source hash, and creation time. Live OpenRouter configuration also records exact provider route(s), system prompt, prompt template, temperature, max tokens, and application version. The fixed system prompt is `Answer the question accurately and concisely.` The prompt template is `Question: {prompt}\nAnswer:`. OpenRouter uses temperature `0` and `max_tokens=512`; a seed and `top_p` are not sent or claimed as controlled. The CLI supports a one-model live run; Streamlit supports exactly two distinct models. OpenRouter comparison requires explicitly selected, pinned provider slugs and disables provider fallback. Returned model/provider and reported cost are checked against the requested route; mismatches or positive cost pause the run.
 
-| Category | Initial rule | Boundary |
-| --- | --- | --- |
-| General Reasoning and Knowledge | For predeclared multiple choice, compare one unambiguous extracted A/B/C/D choice; for short answer, compare case/whitespace-normalized text with predeclared accepted forms. | Ambiguous or multiple choices are not guessed; short-answer equivalence needs review. |
-| Mathematics | Compare a single final numeric answer after predeclared unit/format normalization; accept absolute difference at most `1e-4` unless an item declares a different tolerance in advance. | Ambiguous multiple numbers or incompatible units go to review; no post-hoc tolerance tuning. |
-| Coding | Parse generated Python as text with `ast.parse`, check the required function name/signature, and flag for manual rubric review. | **Never execute untrusted generated code on the host**, including via `exec`, `eval`, imports, or unit tests. AST validity alone is not functional correctness; any future execution requires an independently designed isolation policy. |
-| Summarization | Check predeclared word-count limits and required key entities; review faithfulness/unsupported claims manually. | Keyword coverage is a proxy, not semantic accuracy or hallucination proof. |
-| Instruction Following | Validate predeclared machine-checkable constraints (e.g. JSON parse/required keys, forbidden strings, bullet count). Report both fraction of constraints passed and all-constraints-passed rate. | Compliance does not establish factual correctness. |
+The OpenCode path is also available in Streamlit, but is a distinct execution path. Its agent, tool-denial policy, and timeout are recorded; it does not share all OpenRouter generation controls and must not be treated as a perfectly controlled provider-equivalent comparison. Provider/network conditions affect latency. No model-order judge is used: current scoring is per-answer objective/proxy scoring, so pairwise position randomization is not applicable.
 
-Keep raw responses and scorer explanations separately from any later human ratings; do not silently overwrite an automatic score after review. Optional blinded human review can label borderline or subjective cases; a second reviewer and LLM judging are not prerequisites. Scoring details that cannot be settled until items exist must be declared per item before evaluation, not invented after viewing outputs.
+## Execution modes and confirmation
 
-## Reporting and limits
+### Offline fixture
 
-Record the dataset hash/version, prompt, settings, scorer version, requested and returned model IDs, provider/routing where known, timestamps, raw answers, latency, token usage when available, and errors without credentials. Report category metrics and operational failures separately; no overall ranking without shared denominators and an uncertainty/limitations statement. Small samples, public-item contamination, imperfect paraphrases, heuristic scorers, model updates, and one-shot sampling limit generalization. Mock/offline responses must never be presented as measured model results.
+The local JSON fixture maps model labels to item IDs and typed answers/errors. The runner tags every response, score, summary, and CSV row `synthetic: true`, source `offline_fixture`. These hand-authored outputs exercise the pipeline only; they are not from a model and are never measured performance. Fixture latency is local processing time and is not model latency.
 
-Live work requires a real key supplied outside version control, confirmed candidate availability and limits, and explicit approval before requests. Pause at rate limits; do not rotate accounts, keys, or IPs to bypass quotas. Nothing in this protocol asserts that access, the four-model comparison, or any score has been verified.
+### Live
+
+Live execution requires an explicit CLI `--live` invocation or Streamlit confirmation before dispatch. The UI displays the selected data/models and requires confirmation; the CLI requires the explicit live flag. OpenRouter requests require a key, an allowlisted exact `:free` ID, pinned provider, and bounded cumulative request cap. A free label/catalog price is not a billing guarantee; verify current account/provider terms first. OpenCode requires separate provider/account checks. No live request is made by fixture mode or result browsing.
+
+## Persistence, failures, and retries
+
+Each run stores immutable `config.json` and `dataset.jsonl`, append-only `responses.jsonl`, and for live runs `attempts.jsonl` (durable attempt intent before dispatch). Derived `scores.jsonl`, `summary.json`, and answer-level `results.csv` can be rebuilt from saved records. Responses retain answer/raw response when available, status/error, timestamps, latency, returned identity/routing, finish reason, generation ID, and token usage where provider supplies it. Errors, rate limits, truncations, and pending work remain visible and are not scored as incorrect. A timeout/transport failure after durable intent is ambiguous; the runner pauses and refuses automatic redispatch until manually investigated. HTTP 429 pauses and can be resumed later; attempts count against the cumulative run cap. Retries are bounded by that cap; there is no infinite retry loop. Never delete or alter attempt logs to force a retry.
+
+## Scoring
+
+Each item declares a scorer and rule data before evaluation. The deterministic scorer supports:
+
+- MCQ: one unambiguous A-D choice must match the reference.
+- Numeric: one finite final number compared to the reference using the declared absolute tolerance (default `1e-4`). Units/text and ambiguous outputs go to review/invalid, not guessed.
+- Short answer: case/whitespace-normalized exact match against predeclared accepted forms.
+- Instruction: declared JSON keys/values, forbidden strings, and/or bullet count; reports constraint fraction and all-constraints pass. This does not measure factual correctness.
+- Coding: Python AST syntax/function signature checks only. Generated code is never executed; the outcome remains review-only and is not correctness.
+- Summarization: word-range and required-term proxies only; faithfulness is not determined and outcome remains review-only.
+
+There is no LLM-as-a-judge implementation in this release. Subjective/review cases do not enter objective accuracy. Automatic results are not silently replaced by human judgments.
+
+## Comparison and aggregation
+
+Both models receive the same item prompt and scoring rule in a comparison run. Reports retain each model's planned, answered, objective-scored, correct, incorrect, review, invalid, failed, truncated, rate-limited, and pending counts. Per-model accuracy is correct/objectively scored; show the denominator. The `matched_comparison` summary uses only item IDs objectively scored for every selected model and reports shared-denominator accuracy, percentage-point difference for two models, and category breakdown on those same matched IDs. Coverage/failures remain visible separately. If there are no shared scored items, matched accuracy and delta are unavailable, not zero.
+
+Original/paraphrase analysis is per model and uses only complete pairs with objective scores for both variants. It reports complete-pair denominator, original/variant correct counts, and original-minus-paraphrase percentage-point difference. A paraphrase drop is an observed result on this set, not proof of general robustness failure. Scores are descriptive; small samples and no repeated trials do not support strong rankings or stable latency claims.
+
+## Reproduction, export, and limitations
+
+Use `python -m evaluation` for fixtures or explicit one-model live CLI runs, and `streamlit run app.py` for the two-model interface. Saved runs are browsable in history and export one row per planned model/item to CSV. To reproduce offline scoring without provider calls, run `reanalyze(run_dir)`; scorer source hash and dataset hash prevent reanalysis after relevant inputs change. Hosted model IDs do not freeze model weights, temperature zero is not deterministic, providers may differ in routing/settings, and network/queue/rate-limit conditions influence latency. Other limitations: only 24 held-out items, possible benchmark contamination, single-author item/paraphrase review, imperfect heuristic scoring, proxy measures for coding/summarization, rate limits, changing model availability, and no repeated-trial reliability or calibrated confidence measure. No confidence claim is inferred from a model self-report.
