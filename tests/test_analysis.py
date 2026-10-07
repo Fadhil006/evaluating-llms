@@ -40,7 +40,9 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(model["categories"]["coding"]["review"], 1)
         self.assertEqual(model["categories"]["reasoning"]["scored"], 4)
         self.assertEqual(model["pairs"], {"planned": 5, "complete": 2,
+                                          "original_scored": 2, "paraphrase_scored": 2,
                                           "original_correct": 1, "variant_correct": 1,
+                                          "original_accuracy": 0.5, "paraphrase_accuracy": 0.5,
                                           "original_minus_variant_pp": 0.0,
                                           "original_correct_variant_wrong": 1,
                                           "original_wrong_variant_correct": 1})
@@ -87,7 +89,40 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(comparison["models"]["b"], {"scored": 1, "correct": 0, "accuracy": 0.0})
         self.assertEqual(comparison["accuracy_difference_pp"], 100.0)
         self.assertEqual(comparison["categories"]["math"]["b"]["scored"], 1)
+        self.assertEqual(comparison["category_matched_questions"], {"math": 1, "reasoning": 0})
         self.assertIsNone(comparison["categories"]["reasoning"]["a"]["accuracy"])
+
+    def test_live_latency_uses_only_saved_successful_nontruncated_live_responses(self):
+        items = [{"id": str(n), "pair_id": str(n), "variant": "original",
+                  "category": "math", "split": "test"} for n in range(6)]
+        responses = [{"model": "a", "item_id": str(n), "status": status, "latency_ms": latency}
+                     for n, status, latency in ((0, "ok", 10), (1, "ok", 20), (2, "ok", 90),
+                                                (3, "error", 1000), (4, "rate_limited", 2000))]
+        responses[2]["finish_reason"] = "length"
+        responses.append({"model": "a", "item_id": "5", "status": "ok", "latency_ms": 90})
+        scores = [{"model": "a", "item_id": str(n), "status": "scored", "correct": True}
+                  for n in (0, 1, 5)]
+        live = analyze(items, responses, scores, ["a"], synthetic=False, source="opencode_live")
+        self.assertEqual(live["models"]["a"]["latency_ms"],
+                         {"count": 3, "average": 40, "median": 20})
+        self.assertEqual(live["models"]["a"]["pending"], 1)
+        self.assertEqual(live["models"]["a"]["failures"], 1)
+        self.assertEqual(live["models"]["a"]["truncated"], 1)
+        fixture = analyze(items, responses, scores, ["a"])
+        self.assertEqual(fixture["models"]["a"]["latency_ms"],
+                         {"count": 0, "average": None, "median": None})
+        unknown = analyze(items, responses, scores, ["a"], synthetic=False, source="offline_fixture")
+        self.assertEqual(unknown["models"]["a"]["latency_ms"]["count"], 0)
+
+    def test_scores_for_truncated_or_failed_responses_are_rejected(self):
+        items = [{"id": "q", "pair_id": "p", "variant": "original",
+                  "category": "math", "split": "test"}]
+        score = [{"model": "a", "item_id": "q", "status": "scored", "correct": True}]
+        for response in ({"status": "ok", "finish_reason": "length"},
+                         {"status": "truncated"}, {"status": "error"},
+                         {"status": "rate_limited"}):
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                analyze(items, [{"model": "a", "item_id": "q", **response}], score, ["a"])
 
     def test_csv_escapes_formula_cells_without_changing_responses_or_counts(self):
         items = [{"id": variant, "pair_id": "p", "variant": variant,

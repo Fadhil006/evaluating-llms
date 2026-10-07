@@ -150,3 +150,22 @@ def load_dataset(path) -> list[dict]:
                 raise ValueError(f"line {line_number}: invalid JSON: {exc}") from exc
     validate_dataset(items)
     return items
+
+
+def select_pairs(items: list[dict], pair_ids=None) -> list[dict]:
+    """Select complete base pairs, preserving dataset order; None selects all."""
+    validate_dataset(items)
+    if pair_ids is None:
+        return items
+    if (not isinstance(pair_ids, (list, tuple)) or not pair_ids or
+            any(not isinstance(pair_id, str) or not pair_id.strip() for pair_id in pair_ids) or
+            len(pair_ids) != len(set(pair_ids))):
+        raise ValueError("pair_ids must be a nonempty sequence of unique pair IDs")
+    available = {item["pair_id"] for item in items}
+    if not set(pair_ids) <= available:
+        raise ValueError(f"unknown pair IDs: {sorted(set(pair_ids) - available)}")
+    selected = [item for item in items if item["pair_id"] in pair_ids]
+    validate_dataset(selected)
+    if len({item["split"] for item in selected}) != 1:
+        raise ValueError("selected pairs must belong to one split")
+    return selected

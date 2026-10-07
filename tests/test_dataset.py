@@ -6,7 +6,7 @@ from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
-from evaluation.dataset import load_dataset, validate_dataset
+from evaluation.dataset import load_dataset, select_pairs, validate_dataset
 
 
 ROOT = Path(__file__).resolve().parents[1] / "datasets" / "v1.0"
@@ -129,6 +129,21 @@ class DatasetTests(unittest.TestCase):
                 rows[21]["rules"]["required_json_values"] = values
                 with self.assertRaisesRegex(ValueError, "invalid required_json_values"):
                     validate_dataset(rows)
+
+    def test_select_pairs_requires_unique_complete_single_split(self):
+        rows = self.dev_items + self.test_items
+        selected = select_pairs(rows, [self.test_items[2]["pair_id"]])
+        self.assertEqual(len(selected), 2)
+        self.assertEqual({item["variant"] for item in selected}, {"original", "paraphrase"})
+        self.assertEqual({item["split"] for item in selected}, {"test"})
+        self.assertIs(select_pairs(self.dev_items), self.dev_items)
+        for ids, message in (([], "nonempty"), (["r1", "r1"], "unique"),
+                             (["absent"], "unknown"),
+                             ([self.dev_items[0]["pair_id"], "r1"], "one split")):
+            with self.subTest(ids=ids), self.assertRaisesRegex(ValueError, message):
+                select_pairs(rows, ids)
+        with self.assertRaisesRegex(ValueError, "expected original and paraphrase"):
+            select_pairs(self.dev_items[:-1], [self.dev_items[-2]["pair_id"]])
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ class RunnerTests(unittest.TestCase):
     def test_counts_resume_and_offline_reanalysis(self):
         self.fixture({"a": {"o": "A", "p": "B"}, "b": {"o": {"status": 503, "error": "offline fail"}}})
         result = run(self.dataset, self.fixtures, self.out, ["a", "b"])
+        self.assertTrue(result["incomplete"])  # Model b's terminal request failures remain explicit.
         a = result["models"]["a"]
         self.assertEqual({k: a[k] for k in ("planned", "answered", "scored", "correct", "incorrect",
                                            "review", "invalid", "failures", "pending")},
@@ -93,6 +94,29 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(resumed["models"]["a"]["correct"], 2)
         self.assertEqual(resumed["models"]["b"]["incorrect"], 1)
 
+    def test_pair_selection_freezes_items_and_rejects_changed_selection(self):
+        items = [json.loads(line) for line in self.dataset.read_text().splitlines()]
+        extra = [{**item, "id": item["id"] + "2", "pair_id": "p2",
+                  "prompt": item["prompt"] + " again"} for item in items]
+        self.dataset.write_text("".join(json.dumps(row) + "\n" for row in extra + items), encoding="utf-8")
+        self.fixture({"a": {"o": "A", "p": "A"}})
+        result = run(self.dataset, self.fixtures, self.out, ["a"], pair_ids=["p1"])
+        self.assertFalse(result["incomplete"])
+        self.assertEqual(result["models"]["a"]["planned"], 2)
+        self.assertEqual([row["item_id"] for row in self.lines()], ["o", "p"])
+        config = json.loads((self.out / "config.json").read_text())
+        self.assertEqual(config["selected_pair_ids"], ["p1"])
+        self.assertEqual(config["selected_item_ids"], ["o", "p"])
+        self.assertEqual(config["schema_version"], 1)
+        self.assertEqual(config["protocol_version"], "1")
+        self.assertEqual(config["software_version"], "0.1.0")
+        self.assertIn("generation_conditions", config)
+        self.assertIn("unsupported_controls", config)
+        self.assertEqual(run(self.dataset, self.fixtures, self.out, ["a"], pair_ids=["p1"])["models"],
+                         result["models"])
+        with self.assertRaisesRegex(ValueError, "config mismatch"):
+            run(self.dataset, self.fixtures, self.out, ["a"], pair_ids=["p2"])
+
 
 class LiveRunnerTests(unittest.TestCase):
     lines = RunnerTests.lines
@@ -127,6 +151,7 @@ class LiveRunnerTests(unittest.TestCase):
             self.assertEqual([a["model"] for a in self.attempts()], [self.models[0]] * 2)
             self.assertEqual(len(self.lines()), 2)
             self.assertEqual(first["models"][self.models[1]]["pending"], 2)
+            self.assertTrue(first["incomplete"])
             resumed = run_live_comparison(self.dataset, self.out, self.models, self.providers, 4)
             self.assertEqual([a["model"] for a in self.attempts()],
                              [self.models[0]] * 2 + [self.models[1]] * 2)
@@ -136,12 +161,29 @@ class LiveRunnerTests(unittest.TestCase):
                                                     [self.models[0]] * 2 + [self.models[1]] * 2])
             self.assertEqual(len({a["attempt_id"] for a in self.attempts()}), 4)
             self.assertEqual(resumed["models"][self.models[1]]["answered"], 2)
+            self.assertFalse(resumed["incomplete"])
             run_live_comparison(self.dataset, self.out, self.models, self.providers, 4)
             self.assertEqual(len(calls), 4)
             self.assertEqual(reanalyze(self.out)["models"], resumed["models"])
         config = json.loads((self.out / "config.json").read_text())
         self.assertEqual(config["providers"], self.providers)
         self.assertEqual(config["models"], self.models)
+
+    def test_selected_live_pair_only_and_frozen_on_resume(self):
+        items = [json.loads(line) for line in self.dataset.read_text().splitlines()]
+        extra = [{**item, "id": item["id"] + "2", "pair_id": "p2",
+                  "prompt": item["prompt"] + " again"} for item in items]
+        self.dataset.write_text("".join(json.dumps(row) + "\n" for row in extra + items), encoding="utf-8")
+        with patch("evaluation.openrouter.generate", side_effect=lambda model, prompt, system, provider,
+                   **settings: self.reply(model, provider)) as generate:
+            result = run_live_comparison(self.dataset, self.out, self.models, self.providers, 4,
+                                         pair_ids=["p1"])
+            self.assertEqual(generate.call_count, 4)
+            self.assertFalse(result["incomplete"])
+            self.assertEqual({row["item_id"] for row in self.lines()}, {"o", "p"})
+            with self.assertRaisesRegex(ValueError, "config mismatch"):
+                run_live_comparison(self.dataset, self.out, self.models, self.providers, 4,
+                                    pair_ids=["p2"])
 
     def test_50_attempt_ceiling_and_cross_model_linkage(self):
         template = json.loads(self.dataset.read_text().splitlines()[0])
