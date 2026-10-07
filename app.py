@@ -295,13 +295,18 @@ def index():
                              "attempts": []})
     selected_id = request.args.get("run")
     selected = next((run for run in runs if run["id"] == selected_id), None)
+    archive_runs = [run for run in runs if not run["id"].startswith("demo-")]
     error = None
-    if selected_id is not None and selected is None:
+    if selected_id is not None and selected is None and not (
+            worker_lock.locked() and selected_id == progress["run"]):
         error = "Cannot read this saved run. Inspect its local files for missing or invalid records."
     messages = get_flashed_messages(with_categories=True)
     notice = next((text for category, text in messages if category == "notice"), None)
     error = error or next((text for category, text in messages if category == "error"), None)
     busy = worker_lock.locked()
+    run_progress = ({"run_id": selected_id, "busy": busy, "event": progress["event"],
+                     "notice": progress["notice"]}
+                    if selected_id == progress["run"] else None)
     if selected_id == progress["run"]:
         event = progress["event"]
         if busy and event:
@@ -322,9 +327,10 @@ def index():
     return render_template("index.html", datasets=datasets,
                            pair_options={option["id"]: option["pairs"] for option in datasets},
                            backends=BACKENDS,
-                           runs=[{k: run[k] for k in ("id", "config", "summary", "status", "csv_available")} for run in runs],
+                           runs=[{k: run[k] for k in ("id", "config", "summary", "status", "csv_available")} for run in archive_runs],
                            selected=selected, busy=busy, csrf_token=session["csrf_token"],
                            submission_nonce=session["submission_nonce"], notice=notice, error=error,
+                           run_progress=run_progress,
                            evidence_status="successful live responses saved" if has_successful_live else "measured results pending",
                            has_successful_live=has_successful_live)
 
@@ -359,8 +365,8 @@ def start_worker(folder, action, *args, **kwargs):
         worker_lock.release()
         flash("Could not start the run; no request was started.", "error")
         return redirect(url_for("index"))
-    flash("Run started in the background. Saved progress appears when you refresh.", "notice")
-    return redirect(url_for("index", run=folder.name))
+    flash("Run started. Saved response and scoring progress will appear below; refreshes are read-only.", "notice")
+    return redirect(url_for("index", run=folder.name) + "#evaluation-progress")
 
 
 @app.post("/runs")
@@ -373,23 +379,36 @@ def create_run():
     selected_pairs = request.form.getlist("selected_pairs")
     try:
         folder = safe_run_path(request.form.get("run_name"))
-        if dataset not in {option["id"] for option in DATASET_OPTIONS} or backend not in BACKENDS:
-            raise ValueError
-        if models[0] == models[1] or any(model not in {option["id"] for option in BACKENDS[backend]} for model in models):
-            raise ValueError
-        cap_text = request.form.get("max_requests", "")
-        if not re.fullmatch(r"[1-9][0-9]?", cap_text) or not 1 <= int(cap_text) <= 50:
-            raise ValueError
-        if request.form.get("confirmed") not in ("on", "true", "yes", "1"):
-            raise ValueError
+    except ValueError:
+        flash("Run name must be 1–64 letters, numbers, underscores or dashes.", "error")
+        return redirect(url_for("index"))
+    if dataset not in {option["id"] for option in DATASET_OPTIONS}:
+        flash("Choose either the Development or Held-out dataset.", "error")
+        return redirect(url_for("index"))
+    if backend not in BACKENDS:
+        flash("Choose a listed model connection.", "error")
+        return redirect(url_for("index"))
+    allowed_models = {option["id"] for option in BACKENDS[backend]}
+    if models[0] == models[1] or any(model not in allowed_models for model in models):
+        flash("Choose two different model IDs from the selected connection.", "error")
+        return redirect(url_for("index"))
+    cap_text = request.form.get("max_requests", "")
+    if not re.fullmatch(r"[1-9][0-9]?", cap_text) or not 1 <= int(cap_text) <= 50:
+        flash("Shared attempt cap must be a whole number from 1 to 50.", "error")
+        return redirect(url_for("index"))
+    if request.form.get("confirmed") not in ("on", "true", "yes", "1"):
+        flash("Confirm the live request warning before starting; nothing was sent.", "error")
+        return redirect(url_for("index"))
+    try:
         options = dataset_options()
-        available = {pair["id"] for option in options if option["id"] == dataset
-                     for pair in option["pairs"]}
-        if (not selected_pairs or len(selected_pairs) != len(set(selected_pairs)) or
-                not set(selected_pairs) <= available):
-            raise ValueError
     except (OSError, TypeError, ValueError, UnicodeError):
-        flash("Invalid dataset, selected pairs, backend, models, cap, run name or confirmation. Nothing was sent.", "error")
+        flash("The selected question set could not be validated; no request was sent.", "error")
+        return redirect(url_for("index"))
+    available = {pair["id"] for option in options if option["id"] == dataset
+                 for pair in option["pairs"]}
+    if (not selected_pairs or len(selected_pairs) != len(set(selected_pairs)) or
+            not set(selected_pairs) <= available):
+        flash("Select one or more unique question pairs belonging to the chosen dataset.", "error")
         return redirect(url_for("index"))
     if not worker_lock.acquire(blocking=False):
         flash("Another run is in progress; no new request was started.", "error")
@@ -422,10 +441,20 @@ def create_run():
         worker_lock.release()
         flash("Could not prepare the run; no request was started.", "error")
         return redirect(url_for("index"))
+    selected_items = next(option["items"] for option in options if option["id"] == dataset)
+    items_by_id = {item["id"]: item for item in selected_items}
+
+    def report_progress(event):
+        item = items_by_id.get(event.get("item_id"), {})
+        visible = {key: event.get(key) for key in (
+            "model", "item_id", "status", "completed", "planned", "attempts", "prompt",
+            "reference_answer", "answer", "score_status", "correct", "explanation")}
+        visible.update(scorer=item.get("scorer"), rules=item.get("rules"),
+                       category=item.get("category"), variant=item.get("variant"))
+        progress.update(run=folder.name, event=visible)
+
     return start_worker(folder, action, *action_args,
-                         pair_ids=selected_pairs,
-                         on_progress=lambda event: progress.update(run=folder.name, event={
-                            key: event.get(key) for key in ("model", "item_id", "status", "completed", "planned", "attempts")}))
+                         pair_ids=selected_pairs, on_progress=report_progress)
 
 
 @app.post("/demo")

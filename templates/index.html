@@ -36,16 +36,39 @@
     <div class="shell content">
       {% if notice %}<div class="message success" role="status"><strong>Update</strong><span>{{ notice }}</span></div>{% endif %}
       {% if error %}<div class="message danger" role="alert"><strong>Attention</strong><span>{{ error }}</span></div>{% endif %}
-      {% if busy %}<div class="message caution" role="status"><strong>Run in progress</strong><span>Another submission is being handled. Reading saved runs is still safe; please wait before starting another comparison.</span></div>{% endif %}
-
-      <section class="demo-invitation" aria-labelledby="demo-title">
-        <div><p class="eyebrow">START HERE · NO PROVIDER REQUESTS</p><h2 id="demo-title">Try the offline example<span class="period">.</span></h2><p>Explore four synthetic development answers and their saved checks. This creates a local practice run; it does not measure a model or contact a provider.</p></div>
-        <form method="post" action="/demo">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="submission_nonce" value="{{ submission_nonce }}">
-          <button class="button demo-button" type="submit" {% if busy %}disabled aria-disabled="true"{% endif %}>Create synthetic demo <span aria-hidden="true">↗</span></button>
-        </form>
+      {% if busy %}<div class="message caution" role="status"><strong>Run in progress</strong><span>The progress panel shows the latest persisted response and scoring step. Page refreshes read local records only and never resend requests.</span></div>{% endif %}
+      {% if run_progress %}
+      <section class="evaluation-progress panel" id="evaluation-progress" tabindex="-1" aria-labelledby="progress-title" aria-live="polite">
+        <div class="section-heading"><div><p class="eyebrow">LIVE RUN · SAVED EVENTS ONLY</p><h2 id="progress-title">Evaluation progress<span class="period">.</span></h2></div><strong>{{ run_progress.run_id }}</strong></div>
+        <ol class="evaluation-steps">
+          <li class="step-complete"><strong>Validate</strong><span>Dataset, split, model IDs, and complete original/paraphrase pairs passed server-side checks.</span></li>
+          <li class="{% if selected %}step-complete{% else %}step-current{% endif %}"><strong>Freeze setup</strong><span>{% if selected %}The run configuration and selected dataset snapshot are saved and hash-checked.{% else %}The shared runner is creating or checking the frozen run configuration.{% endif %}</span></li>
+          <li class="{% if run_progress.event %}step-complete{% else %}step-current{% endif %}"><strong>Collect identical tasks</strong><span>Selected questions are sent to each model with the same prompt template and generation settings supported by the backend.</span></li>
+          <li class="{% if run_progress.event and run_progress.event.score_status %}step-complete{% elif run_progress.event %}step-current{% else %}step-waiting{% endif %}"><strong>Score and compare</strong><span>Saved responses are checked against each question’s declared deterministic rule or marked for review; only shared objective scores enter model comparison.</span></li>
+        </ol>
+        {% if run_progress.event %}{% set event = run_progress.event %}
+        <div class="progress-saved">
+          <div class="progress-count"><strong>{{ event.completed }} / {{ event.planned }}</strong><span>saved outcomes · {{ event.attempts }} cumulative attempts</span></div>
+          <p><strong>Latest saved item:</strong> {{ event.item_id }} · {{ event.category | default('category unavailable', true) }} · {{ event.variant | default('variant unavailable', true) }} · {{ event.model }}</p>
+          <div class="progress-answer-grid"><div><h3>Question</h3><p class="verbatim">{{ event.prompt | default('Not available', true) }}</p><p><strong>Declared scorer:</strong> {{ event.scorer | default('Not recorded', true) }}</p>{% if event.rules is defined %}<pre class="verbatim">{{ event.rules | tojson(indent=2) }}</pre>{% endif %}</div>
+            <div><h3>Saved response &amp; evaluation</h3><p><strong>Reference:</strong></p><p class="verbatim">{{ event.reference_answer | default('Not available', true) }}</p><p><strong>Outcome:</strong> {{ event.status }} · {{ event.score_status | default('not objectively scored', true) }}{% if event.correct is defined and event.correct is not none %} · {{ 'pass' if event.correct else 'fail' }}{% endif %}</p>{% if event.answer is not none %}<pre class="verbatim">{{ event.answer }}</pre>{% else %}<p>No answer was saved for this outcome.</p>{% endif %}{% if event.explanation %}<p><strong>Scoring explanation:</strong> {{ event.explanation }}</p>{% endif %}</div>
+          </div>
+          <p class="field-hint">This panel updates from saved response events. Refreshing it reads local run files only and never resends a request.</p>
+        </div>
+        {% else %}<p class="progress-wait">The run has started. Waiting for the first response to be durably saved before displaying it; this page will refresh while the worker is active.</p>{% endif %}
       </section>
+      {% endif %}
+
+      <details class="demo-invitation">
+        <summary>Optional synthetic fixture demo · no provider requests</summary>
+        <div class="demo-content"><div><h2>Try the offline example<span class="period">.</span></h2><p>Explore four synthetic development answers and their saved checks. This creates a local practice run; it does not measure a model or contact a provider.</p></div>
+          <form method="post" action="/demo">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="submission_nonce" value="{{ submission_nonce }}">
+            <button class="button demo-button" type="submit" {% if busy %}disabled aria-disabled="true"{% endif %}>Create synthetic demo <span aria-hidden="true">↗</span></button>
+          </form>
+        </div>
+      </details>
 
       <section class="section setup" aria-labelledby="setup-title">
         <div class="section-heading">
@@ -60,10 +83,9 @@
               <div class="form-grid">
                  <div class="field"><label for="dataset">Question set</label><select id="dataset" name="dataset" required aria-describedby="dataset-help"><option value="" disabled selected>Choose a dataset</option>{% for dataset in datasets %}<option value="{{ dataset.id }}">{{ dataset.label }}</option>{% endfor %}</select><small id="dataset-help">Choose pairs below. Each pair includes its original and paraphrase.</small></div>
                 <div class="field"><label for="backend">Connection</label><select id="backend" name="backend" required aria-describedby="backend-help"><option value="" disabled selected>Choose a backend</option>{% for name in backends %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select><small id="backend-help">Choose models offered by the same connection below.</small></div>
-                <div class="field"><label for="model-a">Model A · exact ID</label><input id="model-a" name="model_a" list="model-options" required autocomplete="off" placeholder="provider/model-id" aria-describedby="models-help"></div>
-                <div class="field"><label for="model-b">Model B · exact ID</label><input id="model-b" name="model_b" list="model-options" required autocomplete="off" placeholder="provider/other-model-id" aria-describedby="models-help"></div>
-                <datalist id="model-options">{% for name, choices in backends.items() %}{% for choice in choices %}<option value="{{ choice.id }}" label="{{ name }} · {{ choice.label }}"></option>{% endfor %}{% endfor %}</datalist>
-                <p class="field-hint" id="models-help">Enter two different exact IDs from the chosen connection. Suggestions may include models from both connections; the server checks the selected pair before running.</p>
+                 <div class="field"><label for="model-a">Model A · exact ID</label><select id="model-a" name="model_a" required aria-describedby="models-help"><option value="" selected disabled>Choose Model A</option>{% for connection, choices in backends.items() %}{% for choice in choices %}<option value="{{ choice.id }}" data-backend="{{ connection }}">{{ choice.label }} · {{ choice.id }}</option>{% endfor %}{% endfor %}</select></div>
+                 <div class="field"><label for="model-b">Model B · exact ID</label><select id="model-b" name="model_b" required aria-describedby="models-help"><option value="" selected disabled>Choose Model B</option>{% for connection, choices in backends.items() %}{% for choice in choices %}<option value="{{ choice.id }}" data-backend="{{ connection }}">{{ choice.label }} · {{ choice.id }}</option>{% endfor %}{% endfor %}</select></div>
+                 <p class="field-hint" id="models-help">Model choices are filtered to the selected connection. Select two different exact IDs; the server checks them again before a run.</p>
                 <div class="field"><label for="run-name">Local run name</label><input id="run-name" name="run_name" type="text" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="pilot-dev" aria-describedby="name-help"><small id="name-help">1–64 letters, numbers, dashes or underscores. Reusing a name must match its frozen setup.</small></div>
                  <div class="field"><label for="max-requests">Shared attempt cap</label><input id="max-requests" name="max_requests" type="number" required min="1" max="50" value="8" inputmode="numeric" aria-describedby="cap-help"><small id="cap-help">Across both models, including earlier attempts and retries. A lower cap leaves a partial run.</small></div>
                </div>
@@ -92,7 +114,7 @@
            <a class="run-link {% if selected and selected.id == run.id %}active{% endif %}" href="/?run={{ run.id | urlencode }}" {% if selected and selected.id == run.id %}aria-current="page"{% endif %}>
              <span class="run-index">{{ '%02d' | format(loop.index) }}</span><span class="run-label"><strong>{{ run.id }}</strong><small>{% if run.status == 'error' %}Unreadable run · inspect local files{% elif run.config.synthetic is sameas true %}Synthetic example · no provider requests{% elif run.config.synthetic is sameas false %}Live run · not independently verified{% else %}Evidence type unverified{% endif %} · {{ run.status | default('unknown') }} · {{ run.config.dataset_version | default('Dataset not recorded', true) }}</small></span><span class="run-arrow" aria-hidden="true">↗</span>
           </a>{% endfor %}</nav>
-        {% else %}<div class="empty-state"><span aria-hidden="true">◎</span><p>No saved runs yet. Set up a live comparison above, or inspect an offline fixture created locally with the CLI.</p></div>{% endif %}
+         {% else %}<div class="empty-state"><span aria-hidden="true">◎</span><p>No non-demo saved runs yet. Demo-generated runs remain on disk but are hidden from this history list.</p></div>{% endif %}
       </section>
 
        {% if selected and selected.status == 'error' %}<section class="section results" aria-labelledby="results-title"><div class="section-heading"><div><p class="eyebrow">03 / EVIDENCE RECORD</p><h2 id="results-title">{{ selected.id }}<span class="period">.</span></h2></div></div><div class="message danger" role="alert"><strong>Run unreadable</strong><span>Saved files are missing or inconsistent. Inspect local files; this record cannot be interpreted or downloaded.</span></div></section>
@@ -143,11 +165,28 @@
     (() => {
       const form = document.querySelector('form[action="/runs"]');
       const dataset = form.elements.dataset;
+      const backend = form.elements.backend;
+      const modelA = form.elements.model_a;
+      const modelB = form.elements.model_b;
       const cap = form.elements.max_requests;
       const count = document.getElementById('pair-count');
       const preview = document.getElementById('request-preview');
       const groups = [...document.querySelectorAll('.pair-options')];
+      function filterModels() {
+        for (const select of [modelA, modelB]) {
+          const chosen = select.selectedOptions[0];
+          if (chosen && chosen.dataset.backend && chosen.dataset.backend !== backend.value) select.value = '';
+          for (const option of select.options) {
+            if (!option.dataset.backend) continue;
+            const wrongBackend = option.dataset.backend !== backend.value;
+            const duplicate = select === modelA ? option.value === modelB.value : option.value === modelA.value;
+            option.hidden = wrongBackend;
+            option.disabled = wrongBackend || duplicate;
+          }
+        }
+      }
       function update() {
+        filterModels();
         for (const group of groups) {
           const active = group.dataset.dataset === dataset.value;
           group.hidden = !active;
@@ -167,6 +206,11 @@
           event.preventDefault();
           dataset.setCustomValidity('Choose at least one complete pair.');
           dataset.reportValidity();
+          return;
+        }
+        modelB.setCustomValidity(modelA.value === modelB.value ? 'Choose a different model for Model B.' : '');
+        if (!form.reportValidity()) {
+          event.preventDefault();
         }
       });
       update();

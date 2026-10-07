@@ -16,7 +16,7 @@ try:
 except ImportError:  # The optional Flask UI is not required for the CLI.
     dashboard = None
 
-from evaluation.runner import run
+from evaluation.runner import run, run_opencode_comparison as real_opencode_comparison
 from evaluation.dataset import load_dataset
 
 
@@ -99,6 +99,52 @@ class DashboardTests(unittest.TestCase):
             router.assert_not_called()
             code.assert_not_called()
 
+    def test_demo_named_runs_are_hidden_from_history_but_not_deleted(self):
+        demo_folder = self.save_run(name="demo-hidden")
+        visible_folder = self.save_run(name="fixture-visible")
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        text = page.get_data(as_text=True)
+        self.assertNotIn("demo-hidden", text)
+        self.assertIn("fixture-visible", text)
+        self.assertTrue((demo_folder / "config.json").is_file())
+        self.assertTrue((visible_folder / "config.json").is_file())
+        direct = self.client.get("/?run=demo-hidden")
+        self.assertEqual(direct.status_code, 200)
+        self.assertIn("demo-hidden", direct.get_data(as_text=True))
+
+    def test_live_run_redirects_to_progress_and_shows_saved_evaluation_steps(self):
+        completed = threading.Event()
+        data = self.form(backend="OpenCode (free-labeled)", model_a=CODE_A, model_b=CODE_B,
+                         run_name="progress-run", selected_pairs=["dr1"], max_requests="4")
+
+        def dispatch(*args, **kwargs):
+            callback = kwargs["on_progress"]
+
+            def observe(event):
+                callback(event)
+                completed.set()
+
+            kwargs["on_progress"] = observe
+            return real_opencode_comparison(*args, **kwargs)
+
+        with patch("evaluation.opencode.generate", side_effect=lambda model, prompt: {
+                "answer": "B", "raw_response": "B"}), patch(
+                "evaluation.runner.time.sleep"), patch(
+                "evaluation.runner.run_opencode_comparison", side_effect=dispatch):
+            response = self.client.post("/runs", data=data)
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(response.headers["Location"].endswith("#evaluation-progress"))
+            self.wait_for_worker(completed)
+            page = self.client.get(response.headers["Location"])
+        self.assertEqual(page.status_code, 200)
+        text = page.get_data(as_text=True)
+        self.assertIn('id="evaluation-progress"', text)
+        self.assertIn("Latest saved item", text)
+        self.assertIn("Single choice compared to reference", text)
+        self.assertIn("SAVED RAW ANSWER", text)
+        self.assertIn("4 / 4", text)
+
     def test_rejected_submissions_never_check_access_or_dispatch(self):
         with patch("evaluation.access.preflight") as preflight, patch(
                 "evaluation.runner.run_live_comparison") as router, patch(
@@ -118,6 +164,14 @@ class DashboardTests(unittest.TestCase):
             preflight.assert_not_called()
             router.assert_not_called()
             code.assert_not_called()
+
+    def test_invalid_model_selection_shows_actionable_error_before_preflight(self):
+        with patch("evaluation.access.preflight") as preflight:
+            response = self.client.post("/runs", data=self.form(model_a="Gemma 4 31B"))
+            self.assertEqual(response.status_code, 302)
+            page = self.client.get("/")
+            self.assertIn(b"Choose two different model IDs from the selected connection", page.data)
+            preflight.assert_not_called()
 
     def test_router_preflight_precedes_dispatch_and_nonce_prevents_replay(self):
         calls = []
