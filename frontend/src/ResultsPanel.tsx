@@ -14,9 +14,11 @@ const show = (value: unknown) => value == null ? 'Not reported' : String(value)
 export default function ResultsPanel({ experimentId, report }: { experimentId: number; report: DashboardReport }) {
   const [metric, setMetric] = useState('all'), [model, setModel] = useState('all'), [task, setTask] = useState('all'), [status, setStatus] = useState('all')
   const [offset, setOffset] = useState(0), [page, setPage] = useState<Page | null>(null), [loading, setLoading] = useState(false), [error, setError] = useState('')
+  const [expandedJobId, setExpandedJobId] = useState<number | null>(null)
   const rows = useMemo(() => report.summaries.filter(row => (metric === 'all' || row.metric === metric) && (model === 'all' || String(row.model_slot) === model) && (task === 'all' || row.task_type === task)), [report, metric, model, task])
   const tasks = [...new Set(report.summaries.map(row => row.task_type))], metrics = [...new Set(report.summaries.map(row => row.metric))]
-  useEffect(() => { setOffset(0) }, [experimentId, model, task, status])
+  useEffect(() => { setOffset(0); setExpandedJobId(null) }, [experimentId, metric, model, task, status])
+  useEffect(() => { setExpandedJobId(null) }, [offset])
   useEffect(() => {
     let active = true
     setLoading(true); setError('')
@@ -50,7 +52,33 @@ export default function ResultsPanel({ experimentId, report }: { experimentId: n
     <p>Each row compares selected routes only when item, repetition and variant match. Page through all matching scheduled jobs to inspect missing responses too.</p>
     {loading && <p role="status">Loading response page…</p>}{error && <p role="alert">Could not load responses: {error}</p>}
     {!loading && !error && page?.total === 0 && <p>No responses or scheduled jobs match these filters.</p>}
-    {[...grouped.values()].map(group=><article key={`${group[0].item_id}-${group[0].repetition}-${group[0].variant}`} className="space-y-2 rounded border p-3"><h6 className="font-medium">{group[0].task_type} · item {group[0].item_id} · repetition {group[0].repetition} · variant {group[0].variant}</h6><p><strong>Prompt:</strong> {group[0].prompt}</p>{group[0].context && <p><strong>Context:</strong> {group[0].context}</p>}{group[0].choices != null && <><strong>Choices:</strong><pre className="whitespace-pre-wrap">{JSON.stringify(group[0].choices,null,2)}</pre></>}<p><strong>Reference answers:</strong> {group[0].reference_answers.join(' | ') || 'Missing reference answers'}</p><div className="grid gap-3 md:grid-cols-2">{group.map(row=><section key={row.job_id} className="min-w-0 rounded border p-3"><h6 className="font-semibold">{row.provider} / {row.model_id}</h6><p>Status: {row.status} (job {row.job_status}){row.attempt_error ? ` · error: ${row.attempt_error}` : ''}</p>{row.response ? <><pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words">{row.response.raw_text}</pre>{row.response.truncated && <p role="status">Truncated response (finish reason: {show(row.response.finish_reason)}).</p>}{row.response.identity_mismatch && <p>Returned route identity mismatch (returned identity is preserved in result detail).</p>}<ul>{row.response.metrics.filter(m=>metric === 'all' || m.metric === metric).map((m,i)=><li key={`${m.metric}-${m.scorer_version}-${i}`}><strong>{m.metric}</strong>: {show(m.value)} · {m.parse_status}; normalized: {show(m.normalized_answer)}; metric denominator: {show(m.quality_denominator)} eligible responses; scheduled denominator: {show(m.scheduled_denominator)} jobs. {m.explanation}</li>)}</ul></> : <p>No response recorded; this is distinct from an incorrect answer.</p>}<p>Route latency: {show(row.duration_ms)} ms · token usage: {row.usage ? `prompt ${show(row.usage.prompt_tokens)}, completion ${show(row.usage.completion_tokens)}` : 'not reported'}</p></section>)}</div>{group.length < 2 && <p>Only one selected-model row for this key is present on this page.</p>}</article>)}
-    {page && page.total > 0 && <nav aria-label="Response results pages" className="flex items-center gap-3"><button className="rounded border px-3 py-2" disabled={offset === 0 || loading} onClick={()=>setOffset(Math.max(0,offset-50))}>Previous page</button><span>Showing {offset+1}–{Math.min(offset+page.items.length,page.total)} of {page.total} scheduled jobs</span><button className="rounded border px-3 py-2" disabled={offset+page.limit >= page.total || loading} onClick={()=>setOffset(offset+page.limit)}>Next page</button></nav>}
+    {[...grouped.values()].map(group => <article key={`${group[0].item_id}-${group[0].repetition}-${group[0].variant}`} className="space-y-2 rounded border p-3">
+      <h6 className="font-medium">{group[0].task_type} · item {group[0].item_id} · repetition {group[0].repetition} · variant {group[0].variant}</h6>
+      <p><strong>Prompt:</strong> {group[0].prompt}</p>{group[0].context && <p><strong>Context:</strong> {group[0].context}</p>}
+      {group[0].choices != null && <><strong>Choices:</strong><pre className="whitespace-pre-wrap">{JSON.stringify(group[0].choices,null,2)}</pre></>}
+      <p><strong>Reference answers:</strong> {group[0].reference_answers.join(' | ') || 'Missing reference answers'}</p>
+      <div className="grid gap-3 md:grid-cols-2">{group.map(row => <section key={row.job_id} className="min-w-0 rounded border p-3">
+        <h6 className="font-semibold">{row.provider} / {row.model_id}</h6>
+        <p>Status: {row.status} (job {row.job_status}){row.attempt_error ? ` · error: ${row.attempt_error}` : ''}</p>
+        {row.response ? <>
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words">{row.response.raw_text}</pre>
+          {row.response.truncated && <p role="status">Truncated response (finish reason: {show(row.response.finish_reason)}).</p>}
+          {row.response.identity_mismatch && <p>Returned route identity mismatch (returned identity is preserved in result detail).</p>}
+          {(() => {
+            const responseMetrics = row.response!.metrics.filter(m => metric === 'all' || m.metric === metric)
+            const detailId = `score-detail-${experimentId}-${row.job_id}`
+            const expanded = expandedJobId === row.job_id
+            return responseMetrics.length > 0 ? <>
+              <ul aria-label="Compact score summary">{responseMetrics.map((m,i) => <li key={`${m.metric}-${m.scorer_version}-${i}`}><strong>{m.metric}</strong>: {show(m.value)} · {m.parse_status}</li>)}</ul>
+              <button type="button" className="underline" aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpandedJobId(expanded ? null : row.job_id)}>{expanded ? 'Hide score details' : 'Show score details'}</button>
+              <div id={detailId} hidden={!expanded}>{responseMetrics.map((m,i) => <div key={`${m.metric}-${m.scorer_version}-${i}`}><p><strong>{m.metric}</strong> normalized answer: {show(m.normalized_answer)}</p><p>Metric denominator: {show(m.quality_denominator)} eligible responses; scheduled denominator: {show(m.scheduled_denominator)} jobs.</p><p>Scorer explanation: {m.explanation}</p></div>)}</div>
+            </> : <p>No scoring details for this metric filter.</p>
+          })()}
+        </> : <p>No response recorded; this is distinct from an incorrect answer.</p>}
+        <p>Route latency: {show(row.duration_ms)} ms · token usage: {row.usage ? `prompt ${show(row.usage.prompt_tokens)}, completion ${show(row.usage.completion_tokens)}` : 'not reported'}</p>
+      </section>)}</div>
+      {group.length < 2 && <p>Only one selected-model row for this key is present on this page.</p>}
+    </article>)}
+    {page && page.total > 0 && <nav aria-label="Response results pages" className="flex items-center gap-3"><button className="rounded border px-3 py-2" disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0,offset-50))}>Previous page</button><span>Showing {offset+1}–{Math.min(offset+page.items.length,page.total)} of {page.total} scheduled jobs</span><button className="rounded border px-3 py-2" disabled={offset+page.limit >= page.total || loading} onClick={() => setOffset(offset+page.limit)}>Next page</button></nav>}
   </section>
 }

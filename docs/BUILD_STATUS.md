@@ -40,6 +40,17 @@ Next concrete action:
 | 7 — Extensions | Not implemented; disabled by default | None | Robustness pairs, item-cluster uncertainty intervals, optional LLM judging |
 | 8 — Release | P8.1–P8.5 verified locally; P8.6 partial | Safe exports/docs/Compose; demo and one live 10-item run; backup/restore test | Live human review/export of the successful run, full security audit and optional extensions |
 
+### Results explanation accordion / 2026-10-08
+
+- Score detail in the answer inspector is collapsed by default. Compact metric/value/parse summaries remain visible; buttons reveal normalization, denominators, and scorer explanations.
+- One `expandedJobId` per dashboard enforces a single-open accordion. Switching filters, experiment, or page closes the current panel. Buttons expose `aria-expanded`/`aria-controls` and remain keyboard operable.
+- Browser E2E verifies default collapse, open, switching (previous panel closes), and closing the active panel. Frontend typecheck/build and Playwright passed after the change.
+
+### Saved experiments accordion / 2026-10-08
+
+- Saved experiment cards are collapsed by default. Opening one card closes the previous one; saving a new draft opens that card for immediate actions.
+- Playwright verifies saved cards begin collapsed and that expanding another preserves exactly one open card. Frontend typecheck/build and the fixture browser flow pass.
+
 Entries below are chronological package notes. The latest final-verification entry supersedes earlier notes that say a router, UI, worker, or browser flow had not yet been integrated.
 
 ### P6.1/P6.2 frontend results and inspection / 2026-10-08

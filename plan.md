@@ -433,10 +433,10 @@ Direct comparisons use the intersection of eligible `(item_id, repetition, varia
 ### Work packages
 
 - [x] **P6.1 — Results UI:** task/metric tables and Recharts bars, completion/failure counts, median/p95 request latency with sample count, nullable token usage and coverage; model/task/status filters. Frontend implementation and static build verified; browser gate remains open.
-- [x] **P6.2 — Answer inspection:** side-by-side responses, reference answers, normalized values and scoring explanations; error view for incorrect, malformed, missing, mismatched-route and truncated responses. Frontend implementation and static build verified; browser gate remains open.
+- [x] **P6.2 — Answer inspection:** side-by-side responses, reference answers, normalized values and scoring explanations; error view for incorrect, malformed, missing, mismatched-route and truncated responses. Score explanations are collapsed by default and use a single-open accordion so expanding one closes the previous detail. Playwright verifies toggle/exclusive expansion and collapse.
 - [x] **P6.3 — Review protocol:** versioned rubric and server-created opaque assignments; seeded/randomized stored presentation order; applicable references displayed consistently. Backend locally verified; browser flow remains in P6.5.
 - [x] **P6.4 — Review persistence:** rubric ratings, preference votes, evaluator label and comments; uniqueness/upsert semantics prevent duplicate inflation; aggregate only latest intended rating per unique key. Backend locally verified; browser flow remains in P6.5.
-- [x] **P6.5 — Browser gates:** Playwright exercises the demo catalog, dataset installation, experiment design/run, pause/resume/cancel, results/exports, blinded review, assignment reload and duplicate-submit protection using a real separate API/worker/temporary SQLite. Keyboard navigation/focus is checked; API tests cover additional partial/error states. Broader manual contrast audit remains desirable.
+- [x] **P6.5 — Browser gates:** Playwright exercises the demo catalog, dataset installation, experiment design/run, pause/resume/cancel, results/exports, blinded review, assignment reload, duplicate-submit protection, and saved-experiment cards with single-open expansion using a real separate API/worker/temporary SQLite. Keyboard navigation/focus is checked; API tests cover additional partial/error states. Broader manual contrast audit remains desirable.
 
 ### Blinding contract
 

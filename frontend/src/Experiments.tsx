@@ -16,6 +16,7 @@ export default function Experiments({ mode }: { mode?: 'live' | 'demo' }) {
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [drafts, setDrafts] = useState<Draft[]>([])
+  const [expandedDraftId, setExpandedDraftId] = useState<number | null>(null)
   const [progress, setProgress] = useState<Record<number, Progress>>({})
   const [results, setResults] = useState<Record<number, Results>>({})
   const [runErrors, setRunErrors] = useState<Record<number, string>>({})
@@ -130,8 +131,10 @@ export default function Experiments({ mode }: { mode?: 'live' | 'demo' }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload,
       })
       if (save) {
+        const saved = result as Draft
         setDrafts(await api<Draft[]>('/api/experiments'))
-        setNotice(`Draft ${(result as Draft).id} saved. Readiness is advisory; backend start-time checks remain authoritative.`)
+        setExpandedDraftId(saved.id)
+        setNotice(`Draft ${saved.id} saved. Readiness is advisory; backend start-time checks remain authoritative.`)
       } else setEstimate(result as Estimate)
     } catch (cause) { setError((cause as Error).message) }
     finally { setBusy(false) }
@@ -202,21 +205,32 @@ export default function Experiments({ mode }: { mode?: 'live' | 'demo' }) {
         <p>Readiness at estimate time: {estimate.ready ? 'all selected routes eligible (advisory only)' : 'blocked for live execution (draft can still be saved)'}.</p>
         <ul className="list-inside list-disc">{estimate.policy_decisions_advisory.map((decision, index) => <li key={index}>{decision.provider} / {decision.model_id}: {decision.allowed ? 'eligible' : `blocked — ${decision.reason}`}</li>)}</ul>
       </div>}
-      <div><h3 className="font-semibold">Saved drafts</h3>
-        {drafts.length === 0 ? <p>No drafts saved yet.</p> : <ul className="space-y-2">{drafts.map(draft => <li key={draft.id} className="rounded border p-3">
-           <strong>{draft.name}</strong> (ID {draft.id}; {progress[draft.id]?.status ?? draft.status}; {draft.provenance_mode}) · dataset version ID {draft.dataset_version_id} · {draft.config.item_ids.length} selected items · {draft.config.models.map(model => `${model.provider} / ${model.model_id}`).join(', ')} · {draft.estimate.initial_candidate_requests} initial generations · readiness {draft.ready ? 'eligible when saved (advisory)' : 'blocked when saved (advisory)'}
-           <div className="mt-2 flex flex-wrap gap-2" aria-label={`Controls for ${draft.name}`}>
-             {(progress[draft.id]?.status ?? draft.status) === 'draft' && <button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'start')} className="rounded border px-3 py-1 disabled:opacity-50">Start</button>}
-             {['queued', 'running'].includes(progress[draft.id]?.status ?? draft.status) && <><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'pause')} className="rounded border px-3 py-1 disabled:opacity-50">Pause</button><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'cancel')} className="rounded border px-3 py-1 disabled:opacity-50">Cancel</button></>}
-             {['paused', 'interrupted'].includes(progress[draft.id]?.status ?? draft.status) && <><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'resume')} className="rounded border px-3 py-1 disabled:opacity-50">Resume</button><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'cancel')} className="rounded border px-3 py-1 disabled:opacity-50">Cancel</button></>}
-           </div>
-           {runErrors[draft.id] && <p role="alert" className="mt-2 whitespace-pre-wrap text-red-800">Experiment {draft.id}: {runErrors[draft.id]}</p>}
-           {progress[draft.id] && <div className="mt-2" aria-label={`Progress for experiment ${draft.id}`}>
-             <p>{progress[draft.id].completed} completed · {progress[draft.id].failed} failed · {progress[draft.id].pending} pending · {progress[draft.id].in_flight} in flight · {progress[draft.id].cancelled} cancelled · attempts {progress[draft.id].attempts_consumed} consumed / {progress[draft.id].attempts_remaining} remaining</p>
-             {progress[draft.id].pause_reason && <p>Pause reason: {progress[draft.id].pause_reason}</p>}
-           </div>}
-            {results[draft.id] && <ResultsPanel experimentId={draft.id} report={results[draft.id]} />}
-        </li>)}</ul>}
+       <div><h3 className="font-semibold">Saved drafts and experiments</h3>
+         {drafts.length === 0 ? <p>No saved experiments yet.</p> : <ul className="space-y-2">{drafts.map(draft => {
+           const expanded = expandedDraftId === draft.id
+           const detailsId = `saved-draft-details-${draft.id}`
+           const currentStatus = progress[draft.id]?.status ?? draft.status
+           return <li key={draft.id} className="rounded border p-3">
+             <button type="button" className="flex w-full flex-wrap items-center justify-between gap-2 text-left" aria-expanded={expanded} aria-controls={detailsId} onClick={() => setExpandedDraftId(expanded ? null : draft.id)}>
+               <span><strong>{draft.name}</strong> (ID {draft.id}; {currentStatus}; {draft.provenance_mode}) · {draft.config.item_ids.length} items · {draft.estimate.initial_candidate_requests} initial requests</span>
+               <span className="underline">{expanded ? 'Collapse experiment' : 'Expand experiment'}</span>
+             </button>
+             <div id={detailsId} hidden={!expanded}>
+               <p className="mt-2">Dataset version ID {draft.dataset_version_id} · Routes: {draft.config.models.map(model => `${model.provider} / ${model.model_id}`).join(', ')} · readiness {draft.ready ? 'eligible when saved (advisory)' : 'blocked when saved (advisory)'}</p>
+               <div className="mt-2 flex flex-wrap gap-2" aria-label={`Controls for ${draft.name}`}>
+                 {currentStatus === 'draft' && <button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'start')} className="rounded border px-3 py-1 disabled:opacity-50">Start</button>}
+                 {['queued', 'running'].includes(currentStatus) && <><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'pause')} className="rounded border px-3 py-1 disabled:opacity-50">Pause</button><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'cancel')} className="rounded border px-3 py-1 disabled:opacity-50">Cancel</button></>}
+                 {['paused', 'interrupted'].includes(currentStatus) && <><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'resume')} className="rounded border px-3 py-1 disabled:opacity-50">Resume</button><button type="button" disabled={runBusy !== null} onClick={() => void lifecycle(draft, 'cancel')} className="rounded border px-3 py-1 disabled:opacity-50">Cancel</button></>}
+               </div>
+               {runErrors[draft.id] && <p role="alert" className="mt-2 whitespace-pre-wrap text-red-800">Experiment {draft.id}: {runErrors[draft.id]}</p>}
+               {progress[draft.id] && <div className="mt-2" aria-label={`Progress for experiment ${draft.id}`}>
+                 <p>{progress[draft.id].completed} completed · {progress[draft.id].failed} failed · {progress[draft.id].pending} pending · {progress[draft.id].in_flight} in flight · {progress[draft.id].cancelled} cancelled · attempts {progress[draft.id].attempts_consumed} consumed / {progress[draft.id].attempts_remaining} remaining</p>
+                 {progress[draft.id].pause_reason && <p>Pause reason: {progress[draft.id].pause_reason}</p>}
+               </div>}
+               {results[draft.id] && <ResultsPanel experimentId={draft.id} report={results[draft.id]} />}
+             </div>
+           </li>
+         })}</ul>}
       </div>
     </>}
   </section>
