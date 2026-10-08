@@ -1,0 +1,85 @@
+import { expect, test } from '@playwright/test'
+
+test('offline demo runs, reports, and blinded review survives reload', async ({ page }) => {
+  await page.goto('/')
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused()
+  await page.goto('/models')
+  await page.getByRole('button', { name: 'Refresh catalog' }).click()
+  await expect(page.getByRole('heading', { name: /DEMONSTRATION — synthetic Alpha/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /DEMONSTRATION — synthetic Beta/ })).toBeVisible()
+  await expect(page.getByText(/no network calls/i)).toBeVisible()
+
+  await page.getByRole('link', { name: 'Datasets' }).click()
+  await page.getByRole('button', { name: 'Install original CC0 dataset' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'installed' })).toBeVisible()
+
+  await page.getByRole('link', { name: 'Experiments' }).click()
+  await page.getByLabel('Experiment name').fill('Browser demo comparison')
+  await page.getByRole('combobox', { name: 'Dataset', exact: true }).selectOption({ label: 'LLM Comparison Lab Original Demo (ID 1)' })
+  await page.getByRole('combobox', { name: 'Dataset version', exact: true }).selectOption({ label: 'v1 (ID 1)' })
+  const modelChecks = page.locator('fieldset').filter({ has: page.getByText('Exact model routes') }).getByRole('checkbox')
+  await modelChecks.nth(0).check()
+  await modelChecks.nth(1).check()
+  await page.getByRole('button', { name: 'Save draft' }).click()
+  const notice = page.getByRole('status').filter({ hasText: 'Draft' })
+  await expect(notice).toBeVisible()
+  const text = await notice.innerText()
+  const experimentId = text.match(/Draft (\d+) saved/)?.[1]
+  expect(experimentId).toBeTruthy()
+
+  const experiment = page.locator('li').filter({ hasText: 'Browser demo comparison' })
+  await experiment.getByRole('button', { name: 'Start' }).click()
+  await expect(experiment).toContainText('completed', { timeout: 30_000 })
+  await expect(experiment.getByRole('heading', { name: 'Results dashboard' })).toBeVisible()
+  await expect(experiment.getByRole('table', { name: /Filtered task metrics/ })).toBeVisible()
+  await expect(experiment.getByText(/DEMONSTRATION — synthetic fixture response/).first()).toBeVisible()
+  for (const format of ['json', 'csv', 'html', 'markdown']) {
+    const exported = await page.request.get(`/api/experiments/${experimentId}/export?format=${format}`)
+    expect(exported.ok()).toBeTruthy()
+    const body = await exported.text()
+    expect(body).toContain('DEMONSTRATION')
+    expect(body).not.toContain('Bearer ')
+  }
+
+  await page.getByRole('link', { name: 'Human Review' }).click()
+  await page.getByLabel('Experiment ID').first().fill(experimentId!)
+  await page.getByLabel('Evaluator label').fill('browser-evaluator')
+  const assignmentResponse = page.waitForResponse(response => response.url().includes('/api/review/assignments') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: 'Create assignment' }).click()
+  const assignment = await (await assignmentResponse).json()
+  expect(JSON.stringify(assignment)).not.toContain('fixture/alpha-v1')
+  expect(JSON.stringify(assignment)).not.toContain('fixture/beta-v1')
+  await expect(page.getByText('Answer A', { exact: true })).toBeVisible()
+  await expect(page.getByText('Answer B', { exact: true })).toBeVisible()
+  await page.getByRole('radio', { name: 'A wins' }).check()
+  await page.getByRole('button', { name: 'Submit review' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Response saved' })).toBeVisible()
+  await page.reload()
+  await expect(page.getByText('Answer A', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Submitted' })).toBeDisabled()
+  await page.getByLabel('Experiment ID').nth(1).fill(experimentId!)
+  await page.getByRole('button', { name: 'Load summary' }).click()
+  await expect(page.getByText(/Pairwise preference \(not accuracy\)/)).toBeVisible()
+  await expect(page.getByText(/1 wins/)).toBeVisible()
+
+  const catalog = await (await page.request.get('/api/models')).json()
+  const datasets = await (await page.request.get('/api/datasets')).json()
+  const datasetVersionId = datasets[0].versions[0].id
+  const longDraft = await page.request.post('/api/experiments', { data: {
+    name: 'Browser pause and resume', dataset_version_id: datasetVersionId,
+    model_snapshot_ids: catalog.map((row: { id: number }) => row.id), item_ids: null,
+    repetitions: 20, retries_per_job: 0, attempt_cap: 400,
+  } })
+  expect(longDraft.ok()).toBeTruthy()
+  await page.getByRole('link', { name: 'Experiments' }).click()
+  const longRun = page.locator('li').filter({ hasText: 'Browser pause and resume' })
+  page.on('dialog', dialog => dialog.accept())
+  await longRun.getByRole('button', { name: 'Start' }).click()
+  await longRun.getByRole('button', { name: 'Pause' }).click()
+  await expect(longRun).toContainText('paused')
+  await longRun.getByRole('button', { name: 'Resume' }).click()
+  await expect(longRun.getByRole('button', { name: 'Cancel' })).toBeVisible()
+  await longRun.getByRole('button', { name: 'Cancel' }).click()
+  await expect(longRun).toContainText('cancelled')
+})

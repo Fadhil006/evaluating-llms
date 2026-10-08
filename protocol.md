@@ -1,5 +1,7 @@
 # Evaluation protocol (implemented)
 
+> **Scope note (2026-10-08):** This file documents the preserved root-level Flask/CLI prototype (`app.py`, `evaluation/`). The current React/FastAPI LLM Comparison Lab methodology is documented in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md). The earlier pending-results status below is historical: new app experiment 4 completed a limited 10-item live OpenRouter comparison, documented in [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md). Do not combine the two applications' protocols or runs.
+
 **Status:** The software and offline fixture workflow are implemented. Completed measured model results are still pending: no successful live model responses have been verified here. Offline fixture runs are synthetic demonstrations and must not be reported as benchmark measurements. This limited protocol is inspired by the survey's what/where/how evaluation dimensions, not an implementation of the entire survey ([survey](sources/ai_project.md), [references](README.md#references)).
 
 ## Dataset and split

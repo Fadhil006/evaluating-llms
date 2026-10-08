@@ -1,90 +1,94 @@
-# Evaluating Large Language Models
+# LLM Comparison Lab
 
-An evaluation framework for controlled comparisons on project-authored question sets. It provides validated development/held-out datasets, synthetic offline fixtures, explicit opt-in live execution, deterministic/proxy scoring, saved run records, paraphrase analysis, a local-only Flask dashboard, a CLI, history, and CSV export. It is not a generic chatbot. Inspired by the survey's **what to evaluate, where to evaluate, and how to evaluate** dimensions, this small project does **not** implement the entire survey (see [References](#references)).
+Local single-user workspace for designing, running, and inspecting small LLM comparisons. It provides OpenRouter discovery, strict free-only checks, versioned dataset import, a durable experiment queue/worker, task-specific scores, results, and blinded human review. This is an implementation inspired by Chang et al.'s LLM evaluation survey; it does not reproduce the paper or every benchmark it discusses.
 
-**Measured results pending.** Existing offline runs are synthetic fixtures, not actual model outputs. The repository currently contains no completed successful live comparison, so it makes no measured accuracy, latency, or model-winner claim. See [`protocol.md`](protocol.md) for the implemented evaluation rules and limitations.
+## Prerequisites
 
-## Implemented scope and current status
+Python 3.12+ and Node.js 24 LTS (tested locally with Python 3.14 and Node 26). SQLite is included with Python. Run commands from the indicated directory; keep the database on local disk.
 
-The datasets cover reasoning, mathematics, coding, knowledge, summarization, and instruction following. The held-out v1.0 dataset contains 12 base questions plus 12 paired paraphrases (24 items); the separate dev dataset is for development only. Current live OpenRouter choices are allowlisted exact IDs, not verified benchmark results:
+## Start locally
 
-| Candidate | Proposed ID |
-| --- | --- |
-| NVIDIA Nemotron 3 Ultra | `nvidia/nemotron-3-ultra-550b-a55b:free` |
-| Google Gemma 4 31B | `google/gemma-4-31b-it:free` |
-| Qwen 3.8 27B | `qwen/qwen3.8-27b:free` |
-| Cohere North Mini Code | `cohere/north-mini-code:free` |
+From the repository root:
 
-Catalog listings are **not endpoint tests**. Confirm endpoint availability, routing, supported settings, quotas, and billing before live requests. Fixed IDs do not guarantee immutable hosted weights. The live CLI runs one model per run; the local dashboard compares exactly two models. The OpenCode route has different controls and is not provider-equivalent to OpenRouter.
-
-Official catalog links: [Nemotron](https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free), [Gemma](https://openrouter.ai/google/gemma-4-31b-it:free), [Qwen](https://openrouter.ai/qwen/qwen3.8-27b:free), [Cohere](https://openrouter.ai/cohere/north-mini-code:free); [public model catalog API](https://openrouter.ai/api/v1/models). Catalog metadata is time-dependent; these links do not establish successful generation requests.
-
-## Offline fixture run (Python 3.11+)
-
-From the repository root, create a **synthetic** fixture for the four items in [`datasets/v1.0/dev.jsonl`](datasets/v1.0/dev.jsonl). These answers are typed examples, **not model responses or measured results**. `runs/` is ignored by Git.
-
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-mkdir -p runs
-printf '%s\n' '{"fixture-a":{"dr1-o":"B","dr1-p":"B","dm1-o":"7","dm1-p":"7"}}' > runs/fixture-dev.json
-python -m evaluation --dataset datasets/v1.0/dev.jsonl --fixtures runs/fixture-dev.json --run-dir runs/dev-synthetic --models fixture-a
+```bash
+cp .env.example .env   # optional: defaults work without an .env file
 ```
 
-The fixture file is JSON mapping each model label to item IDs and answer strings (or objects with `status` and `answer`/`error`). The CLI uses only the standard library; it saves a frozen dataset, config, responses, scores, `summary.json`, and `results.csv` in `runs/dev-synthetic/`. Reusing a run directory requires the same dataset, fixture path, and model labels. To rebuild the derived scores, summary, and CSV from the saved responses without making requests:
+The empty key placeholders are intentional. Put `OPENROUTER_API_KEY` and `OPENCODE_ZEN_API_KEY` in `.env` on the **server only**. Missing keys are a normal unavailable state. `FREE_ONLY=true` cannot be disabled. `EXECUTION_MODE=demo` uses a separate `data/demo.sqlite3` database, makes no provider calls, and serves only synthetic fixture models/answers. Demo results are not measurements of real models. Never put keys in `frontend/`, browser storage, or `VITE_` variables.
 
-```sh
-python -c 'from evaluation.runner import reanalyze; reanalyze("runs/dev-synthetic")'
-python -m json.tool runs/dev-synthetic/summary.json
-# CSV: runs/dev-synthetic/results.csv
-python -m unittest discover -s tests
+In terminal 1:
+
+```bash
+cd backend
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]' -c requirements.lock
+.venv/bin/alembic upgrade head
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Optional local-only Flask dashboard and saved-results viewer (third-party dependency, not needed for the CLI; no deployment):
+In terminal 2:
 
-```sh
-python -m pip install '.[ui]'
-python app.py
+```bash
+cd frontend
+npm ci
+npm run dev
 ```
 
-Open `http://127.0.0.1:8501` on the same machine. An optional collapsed offline demo uses synthetic answers and sends no provider requests; use the CLI fixture mode for custom local fixture runs.
+In a third terminal start the durable worker:
 
-The Flask form selects a dev or held-out dataset, one or more **complete original/paraphrase pairs**, a backend, two different exact allowlisted model IDs, a shared cumulative request cap (up to 50 attempts), and a local run name. Each selected pair includes both wordings, and both models receive both items. A selected pair therefore means four first attempts total; selecting every dev pair takes 8 and every held-out pair takes 48. A smaller cap leaves a partial run. The optional local synthetic demo uses two synthetic fixture labels and performs no provider calls; it is not measured performance, and `demo-` runs are hidden from the history list (not deleted). OpenRouter provider routes are pinned by the app's model mapping; there is no provider-slug selector in the UI. Generation controls are not editable in the UI: OpenRouter uses the fixed system prompt/template, temperature 0, and 512 max tokens, while OpenCode uses separate recorded CLI controls. New runs record selected pair/item IDs, schema/protocol/software versions, `generation_conditions`, and `unsupported_controls` in `config.json`; the saved-run UI displays the raw frozen config as well as provenance. Live requests require explicit confirmation; OpenRouter also runs an access check, and a paid or unverified OpenRouter account requires a positive finite key spending cap. The dashboard can use an exported `OPENROUTER_API_KEY` or the ignored local `.env` (mode 600). Browsing saved runs and downloading CSV does not make provider requests. Fixture outputs cannot establish real model accuracy or latency. Only shared rule-scored items enter the matched comparison; review, invalid, failed, unscored, and pending items remain separate. Reusing a run name requires the same frozen config and selected dataset snapshot; the quota check requires enough remaining quota for the **full selected cap** even on resume.
-
-The dashboard also offers **OpenCode (free-labeled)** for the configured OpenCode Zen chat models currently listed as free. This uses your installed OpenCode CLI and its existing provider login instead of an OpenRouter key. The special-purpose Jev endpoint is omitted because it is not a standard chat-completion model. Do not reuse an OpenRouter run name. A model's “free” label is **not a billing guarantee**: OpenCode has no verified spend-cap preflight here, so check provider/account terms yourself before confirming outbound requests. The free catalog can change; update the allowlist before using newly listed models. Timeouts or uncertain CLI failures pause the run for manual inspection; they are never retried automatically.
-
-## Opt-in live run
-
-Live mode requires `--live`, one exact allowlisted `:free` model ID, and one pinned provider slug; provider fallback is disabled. Check the provider route and your account's **free-tier daily quota in the account UI** before opting in. Catalog listings do not guarantee a successful request or free billing. The live CLI reads `OPENROUTER_API_KEY` from the environment, **not automatically from `.env`**. Enter the key only on your own machine (never paste it into chat):
-
-```sh
-read -rs -p 'OpenRouter key: ' OPENROUTER_API_KEY; printf '\n'; export OPENROUTER_API_KEY
+```bash
+cd backend
+EXECUTION_MODE=live .venv/bin/python -m app.worker
 ```
 
-Alternatively, populate an ignored `.env` locally from `.env.example` and explicitly load the trusted, shell-compatible file with `set -a; . ./.env; set +a`. Never commit, log, or save a key in runs/reviews. After checking the local key, exact model ID and provider slug, start with at most two dev requests:
+Open http://127.0.0.1:5173/. Check `/api/health` and `/api/settings` for safe status. Catalog refresh uses configured providers. For execution, select at least two exact routes with fresh verified zero-cost evidence and configured credentials; unknown, paid, stale, unsupported, unavailable, and unconfigured routes are blocked. Zen pricing uses a dated exact-ID official allowlist; the key must still be configured before Zen routes can run. No model is substituted automatically. If fewer than two eligible routes are available, keep the comparison as a draft.
 
-```sh
-python -m evaluation --live --dataset datasets/v1.0/dev.jsonl --run-dir runs/gemma-dev-live --model google/gemma-4-31b-it:free --provider google-ai-studio --max-requests 2
+For the offline fixture demo, stop the services and use the same startup commands with `EXECUTION_MODE=demo` in each terminal. Run migrations against the demo DB before starting. Refresh Models, install the original CC0 dataset, select the two DEMONSTRATION fixture routes, design the quick ten-item run, save it, then Start. The demo worker uses no provider keys/network. Change mode only when all three processes are stopped; mode-specific databases are separate. Migrations are explicit, never automatic on API startup.
+
+Stop API, worker, and Vite with Ctrl+C.
+
+## Docker Compose
+
+With Docker Engine and the Compose plugin installed:
+
+```bash
+cp .env.example .env   # optional; add provider keys here only for live mode
+docker compose up --build
 ```
 
-Only after inspecting that separate dev run and confirming quota/route again, opt into a **new production run** on the held-out set (24 items = 12 base pairs):
+Compose runs the migration once, then starts the API and separate worker with the same persistent named volume. The API is published only on `127.0.0.1:8000`; the worker is not published. The frontend production build is served by FastAPI. Open http://127.0.0.1:8000. `docker compose down` stops services but preserves the database volume. `docker compose down -v` permanently deletes that volume and all stored datasets/experiments—back up first.
 
-```sh
-python -m evaluation --live --dataset datasets/v1.0/benchmark.jsonl --run-dir runs/gemma-benchmark-live --model google/gemma-4-31b-it:free --provider google-ai-studio --max-requests 24
+For Compose demo mode without a `.env` file, run `EXECUTION_MODE=demo docker compose up --build`; the demo and live databases remain separate paths in the same volume.
+
+## Verification and schema changes
+
+```bash
+cd backend
+.venv/bin/alembic upgrade head
+.venv/bin/alembic check
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check app tests alembic
+
+cd ../frontend
+npm ci
+npm run typecheck
+npm run build
+npm run test:e2e
 ```
 
-The live **CLI** still handles one model per run (`--max-requests` up to 40); the local dashboard can compare two models in one saved run (shared cap up to 50). Attempts count cumulatively, including retries, not per invocation. HTTP 429 stops the run; unresolved attempts require manual inspection of saved logs and provider state before any retry, never automatic redispatch. The 12 base pairs are exploratory, not a robust leaderboard; coding and summarization checks are review-only proxies, not functional correctness or faithfulness scores. Instruction-rule scores check declared constraints, **not factual correctness**. **Measured results are pending.** See [`protocol.md`](protocol.md) for the implemented protocol and deferred methods.
+The browser test uses `/usr/bin/chromium` and starts an isolated demo API, worker, and Vite server; override `PYTHON` if the backend interpreter is elsewhere. It exercises catalog/dataset setup, a synthetic ten-item run, pause/resume/cancel, results, all export formats, a blinded vote, and assignment reload. It does not verify live provider calls.
 
-# References
+Regenerate the conspicuously synthetic fixture report with `cd backend && .venv/bin/python scripts/generate_sample_report.py`; it writes `docs/sample-report.md` using a temporary SQLite database and no live provider calls.
 
-These sources inform evaluation design and interpretation. The dataset items, prompts, reference answers, and scoring rules here are project-authored. MT-Bench, Chatbot Arena, PandaLM, HELM, and AlpacaEval are **related work, not implemented or imported benchmarks**; no LLM-as-a-judge, human-preference voting, or calibrated judging workflow is implemented. Their results do not establish performance of any model in this repository. Such methods remain deferred, not implicit capabilities of the two-model UI.
+The Python dependency pins are in `backend/requirements.lock` (pip-compile from `backend/pyproject.toml`); npm dependencies are in `frontend/package-lock.json`. Back up SQLite only after stopping API and worker, or use SQLite's backup API; include the WAL state in any consistent backup. Use Alembic revisions for schema changes.
 
-1. Chang et al. (2024), [“A Survey on Evaluation of Large Language Models”](https://doi.org/10.1145/3641289) ([local text](sources/ai_project.md)). Broad overview of tasks, methods, and evaluation benchmarks; motivates reporting task and method explicitly.
-2. Zheng et al. (2023), [“Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena”](https://arxiv.org/abs/2306.05685). Introduces MT-Bench and studies model-based judging and its biases. This project does not implement an LLM judge; the work is cited as relevant context, not an implemented method.
-3. Chiang et al. (2024), [“Chatbot Arena: An Open Platform for Evaluating LLMs by Human Preference”](https://arxiv.org/abs/2403.04132). Human preference evaluation context; this project instead applies item-level objective/proxy scoring and does not claim Arena-style preference judgments.
-4. Liang et al. (2023), [“Holistic Evaluation of Language Models” (HELM)](https://arxiv.org/abs/2211.09110). Supports transparent, multi-metric reporting and explicit scenario coverage; this project is much smaller and does not reproduce HELM.
-5. Wang et al. (2023), [“PandaLM: An Automatic Evaluation Benchmark for LLM Instruction Tuning Optimization”](https://arxiv.org/abs/2306.05087). Relevant to automatic evaluation of instruction-following systems; this project does not use PandaLM or its judge.
-6. Dubois et al. (2024), [“Length-Controlled AlpacaEval: A Simple Way to Debias Automatic Evaluators”](https://arxiv.org/abs/2404.04475). Illustrates sensitivity/bias in automatic preference evaluation; no AlpacaEval method or judge is implemented here.
-7. [OpenRouter API documentation](https://openrouter.ai/docs/api-reference/overview) and [model catalog API](https://openrouter.ai/api/v1/models). Provider integration and dynamic model-catalog information; catalog presence does not guarantee successful requests, fixed weights, or zero billing.
+## Current limits / unfinished release work
 
-For implemented scoring and limitations, see [`protocol.md`](protocol.md). For the survey's project-specific interpretation, see [`project_overview.md`](project_overview.md).
+- Local, single-user only; no authentication or public deployment.
+- Provider availability/pricing is dynamic. One saved 10-item live comparison (experiment 4) completed on two OpenRouter verified-free routes; it is a convenience-sample smoke test, not broad superiority evidence. OpenRouter quota reports may be unknown; application counters cannot see external key usage. Zen currently has free-price catalog entries, but no Zen key is recognized by this server, so it cannot execute Zen requests yet.
+- Demo responses are synthetic and identical across fixture routes; they only verify workflow and data flow.
+- Convenience dataset is 30 original items, not a validated benchmark or basis for broad superiority claims. Models/provider routes may change; retries can have unknown remote outcomes.
+- Fairness/calibration and optional judge/robustness/uncertainty extensions are unfinished.
+- Full release security audit and restore rehearsal, user-selectable fixture failure scenarios, live Zen execution, and human review/export of the saved live run remain incomplete. A generated synthetic sample report and a standard-library SQLite backup/restore test are included.
+
+See `plan.md` and `docs/BUILD_STATUS.md` for phase status, exact verification and the Commander resume instructions.
