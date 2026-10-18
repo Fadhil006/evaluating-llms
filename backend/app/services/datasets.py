@@ -202,7 +202,7 @@ def validate(rows: list[tuple[int, dict]]) -> dict:
         item.setdefault("variant_id", None)
         item.setdefault("review_status", "draft" if item["split"] != "legacy_unknown" else "legacy_unknown")
         item.setdefault("provenance", {})
-        for field in ("reference_answers", "choices", "scoring_config", "tags"):
+        for field in ("reference_answers", "choices", "scoring_config", "tags", "provenance"):
             if isinstance(item.get(field), str) and item[field]:
                 try:
                     item[field] = json.loads(item[field], object_pairs_hook=unique_pairs)

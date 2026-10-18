@@ -83,6 +83,8 @@ def test_csv_quotes_and_defends_formula_strings(tmp_path):
     with factory.begin() as session:
         item = session.scalar(select(DatasetItem))
         item.prompt = " \t=1+2"
+        item.split, item.family_id, item.variant_id = "dev", "local:csv-export", "original"
+        item.provenance = {"origin": "local draft"}
         assignment = ReviewAssignment(opaque_id="opaque", experiment_id=eid, dataset_item_id=item.id,
                                      mode="rubric", evaluator_label="evaluator", presentation={})
         session.add(assignment)
@@ -96,6 +98,9 @@ def test_csv_quotes_and_defends_formula_strings(tmp_path):
     assert rows[0]["prompt"] == "' \t=1+2"
     assert rows[0]["human_feedback"].startswith("[")  # JSON cell cannot be a spreadsheet formula
     assert rows[0]["human_comments"] == "'@SUM(1,2)"
+    assert (rows[0]["split"], rows[0]["family_id"], rows[0]["variant_id"]) == (
+        "dev", "local:csv-export", "original")
+    assert json.loads(rows[0]["item_provenance_json"]) == {"origin": "local draft"}
     assert json.loads(rows[0]["usage_json"]) if rows[0]["usage_json"] else True
     assert '"response, value"' in content
     assert "secret-sentinel" not in content

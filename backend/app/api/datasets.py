@@ -106,5 +106,8 @@ def get_version(request: Request, dataset_id: int, version: str):
                 "items": [{"id": item.external_id, "task_type": item.task_type, "prompt": item.prompt,
                            "context": item.context, "choices": item.choices, "reference_answers": item.reference_answers,
                            "scoring_config": item.scoring_config, "tags": item.tags,
-                           "source": item.source or "unknown", "license": item.license or "unknown"}
+                            "source": item.source or "unknown", "license": item.license or "unknown",
+                            "split": item.split, "family_id": item.family_id,
+                            "variant_id": item.variant_id, "review_status": item.review_status,
+                            "provenance": item.provenance}
                           for item in session.scalars(select(DatasetItem).where(DatasetItem.dataset_version_id == row.id).order_by(DatasetItem.external_id))]}

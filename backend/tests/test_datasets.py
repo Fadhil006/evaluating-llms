@@ -213,3 +213,14 @@ def test_malformed_split_and_review_metadata_are_validation_errors(tmp_path):
     fields = {err["field"] for err in response.json()["detail"]["errors"]}
     assert {"split", "family_id", "review_status"} <= fields
     engine.dispose()
+
+
+def test_csv_provenance_json_roundtrips_with_split(tmp_path):
+    client, engine = client_for(tmp_path)
+    item = row() | {"split": "dev", "family_id": "local:csv-family", "variant_id": "original",
+                    "provenance": {"origin": "project draft"}, "review_status": "draft"}
+    response = send(client, [item], format="csv", save=True)
+    assert response.status_code == 201, response.text
+    detail = client.get(f"/api/datasets/{response.json()['dataset_id']}/versions/v1").json()
+    assert detail["items"][0]["provenance"] == {"origin": "project draft"}
+    engine.dispose()

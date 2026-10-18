@@ -143,6 +143,8 @@ def report_data(session: Session, experiment_id: int, redactions: list[str] | No
                                                .order_by(MetricResult.metric, MetricResult.scorer_version))]
         data["jobs"].append({"job_id": job.id, "model_slot": job.model_slot,
             "item_id": item.external_id, "task_type": item.task_type, "prompt": item.prompt,
+            "split": item.split, "family_id": item.family_id, "variant_id": item.variant_id,
+            "review_status": item.review_status, "item_provenance": item.provenance,
             "context": item.context, "choices": item.choices, "reference_answers": item.reference_answers,
             "repetition": job.repetition, "variant": job.variant, "status": job.status,
             "execution_order": job.execution_order, "attempts": [{"number": a.attempt_number,
@@ -214,7 +216,8 @@ def render_csv(data: dict) -> str:
     writer.writerow(["job_id", "model_slot", "provider", "model_id", "requested_model_id", "item_id", "task_type", "repetition",
                      "variant", "job_status", "prompt", "attempt_number", "attempt_outcome", "duration_ms", "error_code",
                      "response", "returned_identity", "finish_reason", "usage_json", "metric", "scorer_version",
-                      "value", "parse_status", "human_feedback", "human_comments", "analysis_json"])
+                       "value", "parse_status", "human_feedback", "human_comments", "analysis_json",
+                       "split", "family_id", "variant_id", "review_status", "item_provenance_json"])
     routes = {m["slot"]: m for m in data["models"]}
     def safe(value):
         if isinstance(value, str) and re.match(r"^[\s\x00-\x1f]*[=+@-]", value):
@@ -241,8 +244,10 @@ def render_csv(data: dict) -> str:
                         json.dumps(data["human_feedback"], ensure_ascii=False),
                          "\n".join(feedback["comments"] for feedback in data["human_feedback"]
                                    if feedback["comments"]),
-                         json.dumps(data["analysis"], ensure_ascii=False) if data.get("analysis") else None]
+                          json.dumps(data["analysis"], ensure_ascii=False) if data.get("analysis") else None,
+                          job["split"], job["family_id"], job["variant_id"], job["review_status"],
+                          json.dumps(job["item_provenance"], ensure_ascii=False)]
                 writer.writerow([safe(value) for value in row])
     if not data["jobs"] and data.get("analysis"):
-        writer.writerow([None] * 25 + [safe(json.dumps(data["analysis"], ensure_ascii=False))])
+        writer.writerow([None] * 25 + [safe(json.dumps(data["analysis"], ensure_ascii=False))] + [None] * 5)
     return stream.getvalue()
