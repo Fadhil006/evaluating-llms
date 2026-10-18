@@ -102,6 +102,16 @@ def test_blind_payload_order_persistence_and_vote_attribution(tmp_path, monkeypa
     monkeypatch.setattr("app.services.review.secrets.randbelow", lambda _: 0)
     b_first = payload(client, evaluator_label="rater-two")
     assert b_first["answers"] == {"A": "answer-0", "B": "answer-1"}
+    result = client.post(f"/api/review/assignments/{b_first['opaque_id']}/vote",
+                         json={"choice": "B", "identity_suspected": False})
+    assert result.status_code == 201
+    agreement = client.get(f"/api/review/experiments/{eid}/summary").json()["descriptive_agreement"]
+    assert agreement == [{"response_ids": [1, 2], "include_references": False,
+                          "evaluator_labels": ["rater-one", "rater-two"], "distinct_evaluator_count": 2,
+                          "overlap_count": 2, "raw_agreement_count": 1, "identity_suspected_count": 1,
+                          "ties": 0, "cannot_judge": 0}]
+    raw_summary = json.dumps(client.get(f"/api/review/experiments/{eid}/summary").json())
+    assert "kappa" not in raw_summary.lower() and "confidence_interval" not in raw_summary.lower()
     engine.dispose()
 
 
@@ -139,4 +149,41 @@ def test_not_an_authentication_boundary_and_completed_responses_only(tmp_path):
     assert assignment["opaque_id"]
     assert client.post(f"/api/review/assignments/{assignment['opaque_id']}/vote",
                        json={"choice": "cannot_judge", "identity_suspected": False}).status_code == 201
+    engine.dispose()
+
+
+def test_assignments_keep_selected_family_repetition_and_variant(tmp_path):
+    client, factory, engine, eid = setup(tmp_path)
+    with factory.begin() as session:
+        base_jobs = session.scalars(select(GenerationJob).where(
+            GenerationJob.experiment_id == eid).order_by(GenerationJob.model_slot)).all()
+        item = session.get(DatasetItem, base_jobs[0].dataset_item_id)
+        for repetition, variant in ((1, "baseline"), (0, "paraphrase"), (1, "paraphrase")):
+            for base_job in base_jobs:
+                job = GenerationJob(experiment_id=eid, model_slot=base_job.model_slot,
+                                    dataset_item_id=item.id, repetition=repetition, variant=variant,
+                                    execution_order=10 + repetition, status="succeeded")
+                session.add(job)
+                session.flush()
+                attempt = RequestAttempt(job_id=job.id, attempt_number=1, outcome="succeeded",
+                                         reserved_at=job.created_at)
+                session.add(attempt)
+                session.flush()
+                session.add(ModelResponse(job_id=job.id, attempt_id=attempt.id,
+                                          raw_text=f"r{repetition}-{variant}-slot{job.model_slot}"))
+
+    assignments = [payload(client, evaluator_label="repeat-evaluator") for _ in range(4)]
+    seen = set()
+    with factory() as session:
+        for public in assignments:
+            record = session.scalar(select(ReviewAssignment).where(
+                ReviewAssignment.opaque_id == public["opaque_id"]))
+            response = session.get(ModelResponse, record.presentation["candidate_response_ids"][0])
+            job = session.get(GenerationJob, response.job_id)
+            expected = (job.dataset_item_id, job.repetition, job.variant)
+            actual = (record.dataset_item_id, record.presentation["repetition"],
+                      record.presentation["variant"])
+            assert actual == expected
+            seen.add(actual)
+    assert len(seen) == 4
     engine.dispose()

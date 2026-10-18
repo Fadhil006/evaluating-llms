@@ -13,7 +13,7 @@ type Assignment = {
 }
 type Route = { model_slot: number; provider: string; model_id: string }
 type PairSummary = { model_slots: number[]; models: Route[]; wins: Record<string, number>; losses: Record<string, number>; ties: number; cannot_judge: number; count: number; evaluator_count: number; sparse: boolean }
-type ReviewSummary = { pairwise: PairSummary[]; rubric: { dimensions: Record<string, { mean: number | null; count: number }>; by_model: Record<string, { route: Route; dimensions: Record<string, { mean: number | null; count: number }>; evaluator_count: number }> } }
+type ReviewSummary = { pairwise: PairSummary[]; descriptive_agreement?: { raw_agreement_count: number; ties: number; cannot_judge: number; identity_suspected_count: number; include_references: boolean }[]; agreement_note?: string; rubric: { dimensions: Record<string, { mean: number | null; count: number }>; by_model: Record<string, { route: Route; dimensions: Record<string, { mean: number | null; count: number }>; evaluator_count: number }> } }
 const dimensions = ['accuracy', 'relevance', 'fluency', 'transparency', 'safety', 'task_alignment']
 const pretty = (name: string) => name.replaceAll('_', ' ')
 
@@ -126,7 +126,10 @@ export default function HumanReview() {
     </article>}
     {summary && <section className="space-y-4 border-t pt-4"><h3 className="font-semibold">Human review aggregates</h3><p>Pairwise preference is not accuracy.</p>
        <h4 className="font-medium">Pairwise preference (not accuracy)</h4>{summary.pairwise.length ? <ul className="list-inside list-disc">{summary.pairwise.map((pair, index) => <li key={pair.model_slots.join('-')}>Comparison {index + 1}: {pair.models.map(route => `${route.provider}/${route.model_id}: ${pair.wins[String(route.model_slot)] ?? 0} wins, ${pair.losses[String(route.model_slot)] ?? 0} losses`).join(' · ')} · ties {pair.ties} · cannot judge {pair.cannot_judge} · comparisons {pair.count} · evaluator labels {pair.evaluator_count}{pair.sparse ? ' · insufficient comparisons (sparse)' : ''}</li>)}</ul> : <p>No pairwise comparisons yet.</p>}
-       <h4 className="font-medium">Rubric dimension means by route</h4>{Object.values(summary.rubric.by_model).length ? <ul className="list-inside list-disc">{Object.values(summary.rubric.by_model).map(row=><li key={row.route.model_slot}>{row.route.provider}/{row.route.model_id} (evaluator labels n={row.evaluator_count}): {dimensions.map(name=>`${pretty(name)} ${row.dimensions[name]?.mean == null ? 'N/A' : row.dimensions[name].mean?.toFixed(2)} (n=${row.dimensions[name]?.count ?? 0})`).join(' · ')}</li>)}</ul> : <p>No rubric ratings yet.</p>}
+        <h4 className="font-medium">Rubric dimension means by route</h4>{Object.values(summary.rubric.by_model).length ? <ul className="list-inside list-disc">{Object.values(summary.rubric.by_model).map(row=><li key={row.route.model_slot}>{row.route.provider}/{row.route.model_id} (evaluator labels n={row.evaluator_count}): {dimensions.map(name=>`${pretty(name)} ${row.dimensions[name]?.mean == null ? 'N/A' : row.dimensions[name].mean?.toFixed(2)} (n=${row.dimensions[name]?.count ?? 0})`).join(' · ')}</li>)}</ul> : <p>No rubric ratings yet.</p>}
+        <h4 className="font-medium">Descriptive reviewer overlap</h4>
+        <p>{summary.agreement_note ?? 'Local evaluator labels do not verify independent reviewers. No reliability interval is reported.'}</p>
+        {summary.descriptive_agreement?.length ? <ul className="list-inside list-disc">{summary.descriptive_agreement.map((row, index) => <li key={index}>Pair {index + 1}: {row.raw_agreement_count}/1 same underlying choice across two labels; references {row.include_references ? 'shown' : 'hidden'}; ties {row.ties}; cannot judge {row.cannot_judge}; identity suspected {row.identity_suspected_count}.</li>)}</ul> : <p>Fewer than two local labels reviewed the same response pair.</p>}
     </section>}
   </section>
 }

@@ -298,7 +298,16 @@ def test_known_provider_free_quota_exhaustion_pauses_before_request(tmp_path):
     engine.dispose()
 
 
-def test_zen_allowlisted_free_route_dispatches_with_configured_key(tmp_path):
+def test_zen_allowlisted_free_route_dispatches_with_configured_key(tmp_path, monkeypatch):
+    zen_now = datetime(2026, 10, 8, 12, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return zen_now
+
+    for module in ("app.providers.policy", "app.providers.dispatch", "app.services.experiment_lifecycle"):
+        monkeypatch.setattr(f"{module}.datetime", FrozenDateTime)
     client, engine, payload, ids = setup(tmp_path)
     captured = []
 
@@ -315,7 +324,7 @@ def test_zen_allowlisted_free_route_dispatches_with_configured_key(tmp_path):
             snapshot.model_id, snapshot.display_name = model_id, model_id
             snapshot.endpoint_family, snapshot.supported_parameters = "chat/completions", ["max_tokens"]
             snapshot.pricing_evidence, snapshot.pricing_source = zen_evidence(model_id), ZEN_PRICING_SOURCE
-            snapshot.pricing_checked_at, snapshot.pricing_expires_at = datetime.now(UTC), ZEN_PRICING_EXPIRES_AT
+            snapshot.pricing_checked_at, snapshot.pricing_expires_at = zen_now, ZEN_PRICING_EXPIRES_AT
     draft = client.post("/api/experiments", json=payload | {"item_ids": ["item-01"], "retries_per_job": 0,
                                                              "attempt_cap": 2}).json()
     assert client.post(f"/api/experiments/{draft['id']}/start").status_code == 200
@@ -325,7 +334,8 @@ def test_zen_allowlisted_free_route_dispatches_with_configured_key(tmp_path):
     api.include_router(results_router)
     test_api = TestClient(api)
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
-        worker = Worker(sessionmaker(engine), {"opencode_zen": Zen("test-key", http)}, spacing_seconds=0)
+        worker = Worker(sessionmaker(engine), {"opencode_zen": Zen("test-key", http)},
+                        clock=lambda: zen_now, spacing_seconds=0)
         assert worker.step()
     assert captured[0].url.path.endswith("/chat/completions")
     assert captured[0].headers.get("authorization") == "Bearer test-key"

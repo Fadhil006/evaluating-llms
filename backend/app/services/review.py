@@ -96,9 +96,9 @@ def create_assignment(session: Session, experiment_id: int, evaluator: str, mode
     existing = session.scalars(select(ReviewAssignment).where(
         ReviewAssignment.experiment_id == experiment_id,
         ReviewAssignment.evaluator_label == evaluator, ReviewAssignment.mode == mode)).all()
-    used_keys = {tuple(sorted(row.presentation["candidate_response_ids"])) for row in existing}
+    used_keys = {row.assignment_key for row in existing}
     pairs = [(candidate_key, item_key, rows) for candidate_key, item_key, rows in pairs
-             if candidate_key not in used_keys]
+             if _assignment_key(mode, candidate_key, item_key) not in used_keys]
     if not pairs:
         raise ReviewProblem("Assignment already exists for this evaluator and candidate")
     candidate_key, item_key, candidates = secrets.choice(pairs)
@@ -106,13 +106,13 @@ def create_assignment(session: Session, experiment_id: int, evaluator: str, mode
     ids = response_ids.copy()
     if mode == "pairwise" and secrets.randbelow(2):
         ids.reverse()
-    assignment_key = hashlib.sha256(json.dumps([mode, candidate_key], separators=(",", ":")).encode()).hexdigest()
+    assignment_key = _assignment_key(mode, candidate_key, item_key)
     assignment = ReviewAssignment(opaque_id=secrets.token_urlsafe(24), assignment_key=assignment_key,
                                   experiment_id=experiment_id,
                                   dataset_item_id=item_key[0], mode=mode, evaluator_label=evaluator,
                                    presentation={"candidate_response_ids": response_ids,
                                                 "A": ids[0], **({"B": ids[1]} if mode == "pairwise" else {}),
-                                                "repetition": key[1], "variant": key[2],
+                                                 "repetition": item_key[1], "variant": item_key[2],
                                                 "include_references": include_references})
     session.add(assignment)
     _flush_unique(session)
@@ -165,6 +165,10 @@ def _comments(comments):
         raise ReviewProblem(f"Comments must be at most {MAX_COMMENTS} characters")
 
 
+def _assignment_key(mode: str, candidate_key: tuple, item_key: tuple) -> str:
+    return hashlib.sha256(json.dumps([mode, candidate_key, item_key], separators=(",", ":")).encode()).hexdigest()
+
+
 def _flush_unique(session):
     try:
         session.flush()
@@ -181,6 +185,7 @@ def summary(session: Session, experiment_id: int) -> dict:
     dimension_totals = defaultdict(list)
     dimension_totals_by_slot = defaultdict(lambda: defaultdict(list))
     evaluator_counts = defaultdict(set)
+    rubric_groups = defaultdict(list)
     for rating in ratings:
         assignment = session.get(ReviewAssignment, rating.assignment_id)
         job = session.scalar(select(GenerationJob).join(ModelResponse, ModelResponse.job_id == GenerationJob.id).where(
@@ -191,6 +196,7 @@ def summary(session: Session, experiment_id: int) -> dict:
                 dimension_totals_by_slot[job.model_slot][dimension].append(value)
         evaluator_counts[job.model_slot].add(rating.evaluator_label)
         rating_rows.append({"model_slot": job.model_slot, "scores": rating.scores})
+        rubric_groups[(rating.response_id, bool(assignment.presentation.get("include_references")))].append(rating)
     dimensions = {name: {"mean": sum(dimension_totals[name]) / len(dimension_totals[name])
                          if dimension_totals[name] else None,
                          "count": len(dimension_totals[name])} for name in DIMENSIONS}
@@ -206,12 +212,15 @@ def summary(session: Session, experiment_id: int) -> dict:
                             "evaluator_count": len(evaluator_counts[slot])}
                 for slot in routes if slot in dimension_totals_by_slot}
     pairs = defaultdict(lambda: {"wins": defaultdict(int), "losses": defaultdict(int),
-                                  "ties": 0, "cannot_judge": 0, "evaluators": set(), "count": 0})
+                                   "ties": 0, "cannot_judge": 0, "evaluators": set(), "count": 0})
+    pair_groups = defaultdict(list)
     votes = session.scalars(select(PairwiseVote).join(ReviewAssignment).where(
         ReviewAssignment.experiment_id == experiment_id)).all()
     for vote in votes:
         assignment = session.get(ReviewAssignment, vote.assignment_id)
         mapping = assignment.presentation
+        pair_groups[(tuple(sorted((mapping["A"], mapping["B"]))),
+                     bool(mapping.get("include_references")))].append((vote, mapping))
         job_a = session.get(ModelResponse, mapping["A"])
         slot_a = session.get(GenerationJob, job_a.job_id).model_slot
         job_b = session.get(ModelResponse, mapping["B"])
@@ -228,11 +237,44 @@ def summary(session: Session, experiment_id: int) -> dict:
             loser = slot_b if winner == slot_a else slot_a
             pair["wins"][winner] += 1
             pair["losses"][loser] += 1
+    rubric_agreement = []
+    for (response_id, include_references), rows in sorted(rubric_groups.items()):
+        evaluator_pairs = list(itertools.combinations(sorted({r.evaluator_label for r in rows}), 2))[:1]
+        for labels in evaluator_pairs:
+            left = next(r for r in rows if r.evaluator_label == labels[0])
+            right = next(r for r in rows if r.evaluator_label == labels[1])
+            rubric_agreement.append({"response_id": response_id, "include_references": include_references,
+                                     "evaluator_labels": list(labels), "dimensions": {
+                name: {"overlap_count": int(left.scores.get(name) is not None and right.scores.get(name) is not None),
+                       "exact_agreement_count": int(left.scores.get(name) is not None and
+                                                     left.scores.get(name) == right.scores.get(name))}
+                for name in DIMENSIONS}})
+    pairwise_agreement = []
+    for (response_ids, include_references), rows in sorted(pair_groups.items()):
+        evaluators = sorted({vote.evaluator_label for vote, _ in rows})
+        if len(evaluators) < 2:
+            continue
+        left = next((vote, mapping) for vote, mapping in rows if vote.evaluator_label == evaluators[0])
+        right = next((vote, mapping) for vote, mapping in rows if vote.evaluator_label == evaluators[1])
+        def identity(choice, mapping):
+            return mapping.get(choice) if choice in {"A", "B"} else choice
+        left_identity, right_identity = identity(left[0].choice, left[1]), identity(right[0].choice, right[1])
+        pairwise_agreement.append({"response_ids": list(response_ids), "include_references": include_references,
+                                   "evaluator_labels": evaluators[:2],
+                                   "distinct_evaluator_count": len(evaluators), "overlap_count": 2,
+                                   "raw_agreement_count": int(left_identity == right_identity),
+                                   "identity_suspected_count": sum(bool(mapping.get("identity_suspected"))
+                                                                    for _, mapping in rows),
+                                   "ties": sum(vote.choice == "tie" for vote, _ in rows),
+                                   "cannot_judge": sum(vote.choice == "cannot_judge" for vote, _ in rows)})
     return {"rubric": {"ratings": rating_rows, "dimensions": dimensions, "by_model": by_model,
+                        "descriptive_agreement": rubric_agreement,
                        "evaluators_per_model_slot": {str(k): len(v) for k, v in evaluator_counts.items()}},
             "pairwise": [{"model_slots": list(key), "models": [routes[slot] for slot in key],
                            "wins": dict(value["wins"]),
                           "losses": dict(value["losses"]), "ties": value["ties"],
                           "cannot_judge": value["cannot_judge"], "count": value["count"],
                           "evaluator_count": len(value["evaluators"]),
-                          "sparse": value["count"] < 2} for key, value in sorted(pairs.items())]}
+                           "sparse": value["count"] < 2} for key, value in sorted(pairs.items())],
+             "descriptive_agreement": pairwise_agreement,
+             "agreement_note": "Descriptive agreement among local evaluator labels; labels are not assumed independent. No inferential reliability statistic is reported."}

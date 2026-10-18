@@ -153,7 +153,8 @@ def test_zen_endpoint_support_and_no_dispatch(monkeypatch):
             adapter.generate(GenerationRequest("gpt-6-sol", (("user", "hi"),)), entries[3], NOW)
 
 
-def test_zen_allowlisted_free_model_requires_server_key():
+def test_zen_allowlisted_free_model_requires_server_key(monkeypatch):
+    _freeze_zen_time(monkeypatch)
     captured = []
     with httpx.Client(transport=httpx.MockTransport(lambda req: captured.append(req) or httpx.Response(
             200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}))) as client:
@@ -163,11 +164,12 @@ def test_zen_allowlisted_free_model_requires_server_key():
                              pricing_expires_at=ZEN_PRICING_EXPIRES_AT)
         request = GenerationRequest("big-pickle", (("user", "hi"),), max_tokens=64)
         with pytest.raises(ProviderError, match="credentials_unavailable"):
-            adapter.generate(request, entry, datetime.now(UTC))
+            adapter.generate(request, entry, ZEN_NOW)
     assert captured == []
 
 
 def test_zen_public_catalog_exposes_only_dated_free_entries_without_key(tmp_path, monkeypatch):
+    _freeze_zen_time(monkeypatch, "app.main", "app.providers.catalog")
     path = tmp_path / "zen.sqlite3"
     migrate(path)
     settings = Settings(database_path=path, demo_database_path=tmp_path / "demo.sqlite3",
@@ -188,6 +190,16 @@ def test_zen_public_catalog_exposes_only_dated_free_entries_without_key(tmp_path
         assert free["eligibility"]["allowed"] is True
         assert unsupported["eligibility"]["reason"] == "unsupported_endpoint"
         assert api.get("/api/providers").json()[0]["credential_configured"] is False
+
+
+def _freeze_zen_time(monkeypatch, *modules):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return ZEN_NOW
+
+    for module in ("app.providers.policy", *modules):
+        monkeypatch.setattr(f"{module}.datetime", FrozenDateTime)
 
 
 def test_generation_uses_experiment_deadline():
