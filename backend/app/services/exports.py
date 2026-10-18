@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AnalysisSnapshot,
     Dataset,
     DatasetItem,
     DatasetVersion,
@@ -29,7 +30,7 @@ from app.models import (
     RequestAttempt,
     ReviewAssignment,
 )
-from app.services.results import recover_scores, results
+from app.services.results import results
 from app.services.review import summary
 
 
@@ -47,12 +48,21 @@ def _clean(value, secrets):
     return value
 
 
-def report_data(session: Session, experiment_id: int, redactions: list[str] | None = None) -> dict | None:
+def report_data(session: Session, experiment_id: int, redactions: list[str] | None = None,
+                analysis_id: int | None = None) -> dict | None:
     """Build a versioned report without serializing ORM objects or private state."""
     experiment = session.get(Experiment, experiment_id)
     if experiment is None:
         return None
-    recover_scores(session, experiment_id)
+    analysis = None
+    if analysis_id is not None:
+        analysis_row = session.scalar(select(AnalysisSnapshot).where(
+            AnalysisSnapshot.id == analysis_id, AnalysisSnapshot.experiment_id == experiment_id))
+        if analysis_row is None:
+            return None
+        analysis = {"id": analysis_row.id, "sha256": analysis_row.content_sha256,
+                    "results": analysis_row.snapshot["results"], "manifest": analysis_row.manifest,
+                    "snapshot": analysis_row.snapshot}
     version = session.get(DatasetVersion, experiment.dataset_version_id)
     dataset = session.get(Dataset, version.dataset_id) if version else None
     config = experiment.config or {}
@@ -103,6 +113,7 @@ def report_data(session: Session, experiment_id: int, redactions: list[str] | No
         "events": [{"timestamp": event.created_at, "type": event.event_type, "details": event.details}
                    for event in events],
         "aggregates": results(session, experiment_id),
+        "analysis": analysis,
         "human_review": summary(session, experiment_id),
         "limitations": ["Convenience sample; not representative of all tasks or users.",
                         "Route latency is measured under this run's conditions, not intrinsic model speed.",
@@ -188,6 +199,9 @@ def render_markdown(data: dict) -> str:
         lines.extend([f"### Slot {job['model_slot']} — item {code(job['item_id'])}", "",
                       f"Status: `{job['status']}`", "", code(job["prompt"]), "",
                       code(job["response"]["text"] if job["response"] else "[no response]"), ""])
+    if data.get("analysis"):
+        lines.extend(["## Frozen analysis snapshot", "",
+                      code(json.dumps(data["analysis"], ensure_ascii=False, indent=2)), ""])
     lines.extend(["## Aggregates", "", code(json.dumps(data["aggregates"], ensure_ascii=False, indent=2)),
                   "", "## Human review", "", code(json.dumps(data["human_review"], ensure_ascii=False, indent=2)),
                   "", "## Limitations", "", *[f"- {line}" for line in data["limitations"]], ""])
@@ -200,7 +214,7 @@ def render_csv(data: dict) -> str:
     writer.writerow(["job_id", "model_slot", "provider", "model_id", "requested_model_id", "item_id", "task_type", "repetition",
                      "variant", "job_status", "prompt", "attempt_number", "attempt_outcome", "duration_ms", "error_code",
                      "response", "returned_identity", "finish_reason", "usage_json", "metric", "scorer_version",
-                     "value", "parse_status", "human_feedback", "human_comments"])
+                      "value", "parse_status", "human_feedback", "human_comments", "analysis_json"])
     routes = {m["slot"]: m for m in data["models"]}
     def safe(value):
         if isinstance(value, str) and re.match(r"^[\s\x00-\x1f]*[=+@-]", value):
@@ -225,7 +239,10 @@ def render_csv(data: dict) -> str:
                        score["metric"] if score else None, score["scorer_version"] if score else None,
                        score["value"] if score else None, score["parse_status"] if score else None,
                         json.dumps(data["human_feedback"], ensure_ascii=False),
-                        "\n".join(feedback["comments"] for feedback in data["human_feedback"]
-                                  if feedback["comments"])]
+                         "\n".join(feedback["comments"] for feedback in data["human_feedback"]
+                                   if feedback["comments"]),
+                         json.dumps(data["analysis"], ensure_ascii=False) if data.get("analysis") else None]
                 writer.writerow([safe(value) for value in row])
+    if not data["jobs"] and data.get("analysis"):
+        writer.writerow([None] * 25 + [safe(json.dumps(data["analysis"], ensure_ascii=False))])
     return stream.getvalue()

@@ -20,8 +20,8 @@ def test_original_dataset_configurations_and_perfect_references():
         assert result["parse_status"] == "valid", item["id"]
         assert result["raw_answer"] == text
         assert all(value == 1 for key, value in result["metrics"].items()
-                   if key != "checks_passed"), item["id"]
-        assert result["scorer_version"] == SCORER_VERSION
+                   if key not in {"instruction_pooled_passed", "instruction_pooled_total"}), item["id"]
+        assert result["scorer_version"] == ("2" if item["task_type"] == "instruction_following" else SCORER_VERSION)
 
 
 def test_choice_single_final_and_ambiguous_labels():
@@ -114,11 +114,32 @@ def test_instruction_checks_partial_exact_and_json():
         {"type": "json_exact", "value": {"ready": True}}]}
     result = scored("instruction_following", "hello", ["hello"], **config)
     assert result["parse_status"] == "malformed_json"
-    assert result["metrics"] == {"instruction_checks": 0.5, "checks_passed": 1}
-    assert scored("instruction_following", '{"ready":1}', [], **config)["metrics"]["checks_passed"] == 0
-    assert scored("instruction_following", '{"ready":true}', [], **config)["metrics"]["checks_passed"] == 1
+    assert result["metrics"] == {"instruction_all_checks": 0.0,
+                                  "instruction_pooled_passed": 1, "instruction_pooled_total": 2}
+    assert result["check_policy_version"] == "instruction-checks-v1"
+    assert result["check_evidence"] == [{"type": "exact_text", "passed": True},
+                                         {"type": "json_exact", "passed": False}]
+    assert scored("instruction_following", '{"ready":1}', [], **config)["metrics"]["instruction_all_checks"] == 0
+    assert scored("instruction_following", '{"ready":true}', [], **config)["metrics"]["instruction_all_checks"] == 0
+    assert scored("instruction_following", '{"ready":true}', [], **config)["metrics"]["instruction_pooled_passed"] == 1
     assert scored("instruction_following", "hello\n", ["hello"],
-                  metric="instruction_checks", checks=[config["checks"][0]])["metrics"]["instruction_checks"] == 0
+                   metric="instruction_checks", checks=[config["checks"][0]])["metrics"]["instruction_all_checks"] == 0
+    empty = scored("instruction_following", "   ", ["hello"], **config)
+    assert empty["metrics"] == {"instruction_all_checks": 0.0,
+                                "instruction_pooled_passed": 0.0, "instruction_pooled_total": 2}
+    assert len(empty["check_evidence"]) == 2
+
+
+def test_instruction_substrings_unicode_and_exact_word_count():
+    config = {"metric": "instruction_checks", "checks": [
+        {"type": "required_substring", "value": "CAFÉ"},
+        {"type": "forbidden_substring", "value": "secret"},
+        {"type": "exact_word_count", "value": 3},
+    ]}
+    result = scored("instruction_following", "Cafe\u0301, two words", [], **config)
+    assert result["metrics"]["instruction_all_checks"] == 1
+    assert all(e["passed"] for e in result["check_evidence"])
+    assert scored("instruction_following", "secret Café two words", [], **config)["metrics"]["instruction_all_checks"] == 0
 
 
 def test_missing_truncated_and_completed_format_failures_are_distinct():

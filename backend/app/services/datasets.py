@@ -15,8 +15,10 @@ from app.models import Dataset, DatasetItem, DatasetVersion
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 5000
-SCHEMA_VERSION = "1"
-FIELDS = {"id", "task_type", "prompt", "context", "reference_answers", "choices", "scoring_config", "tags", "source", "license"}
+SCHEMA_VERSION = "2"
+FIELDS = {"id", "task_type", "prompt", "context", "reference_answers", "choices", "scoring_config", "tags", "source", "license", "split", "family_id", "variant_id", "provenance", "review_status"}
+SPLITS = {"dev", "calibration", "test", "legacy_unknown"}
+REVIEW_STATUSES = {"draft", "pending", "reviewed", "legacy_unknown"}
 TASK_METRICS = {
     "multiple_choice": "label_accuracy", "short_factual": "normalized_exact_match",
     "extractive_qa": "token_f1", "arithmetic": "numeric_exact",
@@ -165,26 +167,41 @@ def validate_config(task: str, config: object, refs: list, choices: list | None)
     elif metric == "instruction_checks":
         checks = config.get("checks")
         if not isinstance(checks, list) or not 1 <= len(checks) <= 20 or any(
-            not isinstance(check, dict) or set(check) != {"type", "value"} or
-            not isinstance(check["type"], str) or check["type"] not in {"exact_text", "json_exact"} or
-            (check["type"] == "exact_text" and (not isinstance(check["value"], str) or not check["value"]))
+            not isinstance(check, dict) or
+            (check.get("type") in {"exact_text", "json_exact"} and set(check) != {"type", "value"}) or
+            (check.get("type") in {"required_substring", "forbidden_substring"} and set(check) != {"type", "value"}) or
+            (check.get("type") == "exact_word_count" and set(check) != {"type", "value"}) or
+            check.get("type") not in {"exact_text", "json_exact", "required_substring", "forbidden_substring", "exact_word_count"} or
+            (check.get("type") in {"exact_text", "required_substring", "forbidden_substring"} and
+             (not isinstance(check.get("value"), str) or not check["value"])) or
+            (check.get("type") == "exact_word_count" and
+             (type(check.get("value")) is not int or not 0 <= check["value"] <= 10000))
             for check in checks
         ):
-            return "checks must declare 1–20 exact_text or json_exact values"
+            return "checks must declare 1–20 valid instruction checks"
     return None
 
 
 def validate(rows: list[tuple[int, dict]]) -> dict:
+    """Validate importer metadata; review_status is uploader-declared, never proof of review."""
     items = []
     errors = []
     seen_ids = {}
     seen_content = {}
+    seen_prompts = {}
+    families = {}
+    variants = {}
     duplicates = []
     for number, raw in rows:
         if set(raw) - FIELDS:
             errors.append(error(number, "row", "Unknown fields: " + ", ".join(sorted(set(raw) - FIELDS))))
             continue
         item = dict(raw)
+        item.setdefault("split", "legacy_unknown")
+        item.setdefault("family_id", None)
+        item.setdefault("variant_id", None)
+        item.setdefault("review_status", "draft" if item["split"] != "legacy_unknown" else "legacy_unknown")
+        item.setdefault("provenance", {})
         for field in ("reference_answers", "choices", "scoring_config", "tags"):
             if isinstance(item.get(field), str) and item[field]:
                 try:
@@ -204,6 +221,31 @@ def validate(rows: list[tuple[int, dict]]) -> dict:
         task = item.get("task_type")
         if not isinstance(task, str) or task not in TASK_METRICS:
             errors.append(error(number, "task_type", "Unknown task type"))
+        split = item.get("split")
+        if not isinstance(split, str) or split not in SPLITS:
+            errors.append(error(number, "split", "Expected dev, calibration, test, or legacy_unknown"))
+        for key in ("family_id", "variant_id"):
+            value = item.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 255):
+                errors.append(error(number, key, "Expected null or nonempty text up to 255 characters"))
+            elif isinstance(value, str):
+                item[key] = value.strip()
+        provenance = item.get("provenance")
+        try:
+            provenance_size = len(canonical(provenance)) if isinstance(provenance, dict) else MAX_BYTES + 1
+        except (TypeError, ValueError):
+            provenance_size = MAX_BYTES + 1
+        if provenance_size > 4000:
+            errors.append(error(number, "provenance", "Expected a structured object up to 4000 characters"))
+        if not isinstance(item.get("review_status"), str) or item["review_status"] not in REVIEW_STATUSES:
+            errors.append(error(number, "review_status", "Unsupported review status"))
+        if isinstance(split, str) and split in SPLITS and split != "legacy_unknown" and not item.get("family_id"):
+            errors.append(error(number, "family_id", "A globally namespaced family_id is required for known splits"))
+        family = item.get("family_id")
+        if isinstance(family, str) and family and isinstance(split, str) and split in SPLITS:
+            if family in families and families[family] != split:
+                errors.append(error(number, "family_id", "Family appears in more than one split"))
+            families[family] = split
         refs = item.get("reference_answers")
         if not isinstance(refs, list) or not 1 <= len(refs) <= 20 or any(
             not isinstance(r, (str, dict, list)) or (isinstance(r, str) and (not r.strip() or len(r) > 10000)) for r in refs
@@ -229,6 +271,16 @@ def validate(rows: list[tuple[int, dict]]) -> dict:
             issue = validate_config(task, item.get("scoring_config"), refs, choices)
             if issue:
                 errors.append(error(number, "scoring_config", issue))
+        if isinstance(family, str) and family and isinstance(split, str) and split in SPLITS:
+            try:
+                signature = (split, task, canonical(item.get("scoring_config", {})), canonical(refs),
+                             canonical(choices) if task == "multiple_choice" else None)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None:
+                if family in variants and variants[family] != signature:
+                    errors.append(error(number, "variant_id", "Family variants must share split, task, scorer, references, and applicable choices"))
+                variants[family] = signature
         external_id = item.get("id")
         if isinstance(external_id, str) and external_id:
             if external_id in seen_ids:
@@ -239,18 +291,26 @@ def validate(rows: list[tuple[int, dict]]) -> dict:
         item["choices"] = choices
         item["tags"] = tags
         # Duplicate identity ignores external ID and attribution, but retains evaluation content.
-        content = {k: v for k, v in item.items() if k not in {"id", "source", "license", "tags"}}
+        content = {k: v for k, v in item.items() if k not in {"id", "source", "license", "tags", "split", "family_id", "variant_id", "provenance", "review_status"}}
         content["prompt"] = " ".join(content["prompt"].split()).casefold()
         content["context"] = " ".join((content["context"] or "").split()).casefold()
         try:
+            prompt_signature = canonical({key: content[key] for key in ("task_type", "prompt", "context", "choices")})
             signature = canonical(content)
         except (ValueError, TypeError):
             errors.append(error(number, "row", "Invalid non-finite or unsupported JSON value"))
             continue
+        if prompt_signature in seen_prompts and seen_prompts[prompt_signature] != split:
+            errors.append(error(number, "split", "Duplicate prompt/context/choices cannot cross splits"))
+        seen_prompts.setdefault(prompt_signature, split)
         if signature in seen_content:
-            duplicates.append({"row": number, "id": external_id, "matches_row": seen_content[signature]})
+            previous_row, previous_split = seen_content[signature]
+            if previous_split != split:
+                errors.append(error(number, "split", "Duplicate evaluation content cannot cross splits"))
+            else:
+                duplicates.append({"row": number, "id": external_id, "matches_row": previous_row})
         else:
-            seen_content[signature] = number
+            seen_content[signature] = (number, split)
         items.append(item)
     if errors:
         raise ImportProblem(errors)
@@ -275,6 +335,26 @@ def save(session: Session, data: bytes, format: str, *, name: str, version: str,
          dataset_id: int | None = None, description: str = "", source: str = "unknown",
          license: str = "unknown", acknowledge_duplicates: bool = False) -> dict:
     result = validate(parse(data, format))  # Never trust a browser preview.
+    known_families = {}
+    known_content = {}
+    for existing in session.scalars(select(DatasetItem)):
+        if existing.family_id:
+            known_families.setdefault(existing.family_id, set()).add((
+                existing.split, existing.task_type, canonical(existing.scoring_config),
+                canonical(existing.reference_answers), canonical(existing.choices)))
+        content = {"task_type": existing.task_type, "prompt": " ".join(existing.prompt.split()).casefold(),
+                   "context": " ".join((existing.context or "").split()).casefold(), "choices": existing.choices}
+        known_content.setdefault(canonical(content), set()).add(existing.split)
+    for item in result["items"]:
+        if item["family_id"]:
+            contract = (item["split"], item["task_type"], canonical(item["scoring_config"]),
+                        canonical(item["reference_answers"]), canonical(item["choices"]))
+            if any(existing != contract for existing in known_families.get(item["family_id"], set())):
+                raise ImportProblem([error(0, "family_id", "Family split, task, scorer, references or choices differ from a saved version")])
+        content = {"task_type": item["task_type"], "prompt": " ".join(item["prompt"].split()).casefold(),
+                   "context": " ".join((item.get("context") or "").split()).casefold(), "choices": item["choices"]}
+        if any(split != item["split"] for split in known_content.get(canonical(content), set())):
+            raise ImportProblem([error(0, "content", "Normalized prompt/context/choices already exists in another split")])
     if result["duplicate_content"] and not acknowledge_duplicates:
         raise ImportProblem([error(d["row"], "content", "Duplicate normalized content; acknowledge_duplicates=true to save") for d in result["duplicate_content"]])
     for field, value, limit in (("name", name, 255), ("version", version, 80), ("description", description, 10000), ("source", source, 512), ("license", license, 100)):
@@ -287,8 +367,6 @@ def save(session: Session, data: bytes, format: str, *, name: str, version: str,
     if dataset is not None:
         if session.scalar(select(DatasetVersion.id).where(DatasetVersion.dataset_id == dataset.id, DatasetVersion.version == version)):
             raise ImportProblem([error(0, "version", "Version already exists")])
-        if session.scalar(select(DatasetVersion.id).where(DatasetVersion.dataset_id == dataset.id, DatasetVersion.content_sha256 == result["content_sha256"])):
-            raise ImportProblem([error(0, "content_sha256", "Identical content already exists in this dataset")])
     else:
         dataset = Dataset(name=name.strip(), description=description, origin="imported", source=source or "unknown", license=license or "unknown")
         session.add(dataset)
@@ -305,7 +383,9 @@ def save(session: Session, data: bytes, format: str, *, name: str, version: str,
     session.add_all(DatasetItem(dataset_version_id=record.id, external_id=item["id"], task_type=item["task_type"],
                                 prompt=item["prompt"], context=item.get("context"), choices=item["choices"],
                                 reference_answers=item["reference_answers"], scoring_config=item["scoring_config"],
-                                tags=item["tags"], source=item["source"], license=item["license"])
+                                tags=item["tags"], source=item["source"], license=item["license"], split=item["split"],
+                                family_id=item["family_id"], variant_id=item["variant_id"], provenance=item["provenance"],
+                                review_status=item["review_status"])
                     for item in result["items"])
     session.flush()
     return {"dataset_id": dataset.id, "version": record.version, "content_sha256": record.content_sha256,

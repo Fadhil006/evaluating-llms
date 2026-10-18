@@ -1,0 +1,37 @@
+import { expect, test } from '@playwright/test'
+
+test('fixture analysis snapshot can be created, reloaded, selected and exported', async ({ page }) => {
+  await page.goto('/models')
+  await page.getByRole('button', { name: 'Refresh catalog' }).click()
+  await page.getByRole('link', { name: 'Datasets' }).click()
+  await page.getByRole('button', { name: 'Install original CC0 dataset' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'installed' })).toBeVisible()
+
+  await page.getByRole('link', { name: 'Experiments' }).click()
+  await page.getByLabel('Experiment name').fill('Analysis snapshot browser check')
+  await page.getByRole('combobox', { name: 'Dataset', exact: true }).selectOption({ label: 'LLM Comparison Lab Original Demo (ID 1)' })
+  await page.getByRole('combobox', { name: 'Dataset version', exact: true }).selectOption({ label: 'v1 (ID 1)' })
+  const checks = page.locator('fieldset').filter({ has: page.getByText('Exact model routes') }).getByRole('checkbox')
+  await checks.nth(0).check(); await checks.nth(1).check()
+  await page.getByRole('button', { name: 'Save draft' }).click()
+  const notice = page.getByRole('status').filter({ hasText: 'Draft' })
+  await expect(notice).toBeVisible()
+  const experimentId = (await notice.innerText()).match(/Draft (\d+) saved/)?.[1]
+  expect(experimentId).toBeTruthy()
+  const experiment = page.locator('li').filter({ hasText: 'Analysis snapshot browser check' })
+  await experiment.getByRole('button', { name: 'Start' }).click()
+  await expect(experiment).toContainText('completed', { timeout: 30_000 })
+
+  await experiment.getByRole('button', { name: 'Create analysis snapshot' }).click()
+  await expect(experiment.getByText(/Snapshot #\d+ · SHA-256/)).toBeVisible()
+  await expect(experiment.getByRole('table', { name: 'Paired family analysis snapshot results' })).toBeVisible()
+  await expect(experiment.getByText(/do not establish an objective winner/i)).toBeVisible()
+  await page.reload()
+  const reloaded = page.locator('li').filter({ hasText: 'Analysis snapshot browser check' })
+  await reloaded.getByRole('button', { name: 'Expand experiment' }).click()
+  await expect(reloaded.getByText(/Snapshot #\d+ · SHA-256/)).toBeVisible()
+  const exportLink = reloaded.getByRole('link', { name: 'Download report + snapshot JSON' })
+  await expect(exportLink).toHaveAttribute('href', /analysis_id=/)
+  const response = await page.request.get(await exportLink.getAttribute('href')!)
+  expect(response.ok()).toBeTruthy()
+})

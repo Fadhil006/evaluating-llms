@@ -8,6 +8,7 @@ from collections import Counter
 from decimal import Decimal, InvalidOperation
 
 SCORER_VERSION = "1"
+INSTRUCTION_CHECK_SCORER_VERSION = "2"
 NORMALIZATION_VERSION = "unicode-nfc-casefold-whitespace-v1"
 TOKENIZER_VERSION = "unicode-word-casefold-v1"
 TASK_METRICS = {
@@ -143,8 +144,10 @@ def score(task: str, raw_answer: str | None, references: list, config: dict,
     elif metric == "json_exact_fields":
         values = {"json_valid": None, "schema_valid": None, "field_exact": None}
     elif metric == "instruction_checks":
-        values = {"instruction_checks": None, "checks_passed": None}
-    result = {"scorer_version": SCORER_VERSION, "normalization_version": NORMALIZATION_VERSION,
+        values = {"instruction_all_checks": None, "instruction_pooled_passed": None,
+                  "instruction_pooled_total": None}
+    result = {"scorer_version": INSTRUCTION_CHECK_SCORER_VERSION if metric == "instruction_checks" else SCORER_VERSION,
+              "normalization_version": NORMALIZATION_VERSION,
               "tokenizer_version": TOKENIZER_VERSION, "task_type": task, "raw_answer": raw_answer,
               "extracted_answer": None, "normalized_answer": None, "parse_status": "missing",
               "metrics": values, "explanation": "No response recorded"}
@@ -156,6 +159,11 @@ def score(task: str, raw_answer: str | None, references: list, config: dict,
     if not raw_answer.strip():
         result.update(parse_status="unparseable", explanation="Empty completed response")
         result["metrics"] = dict.fromkeys(values, 0.0)
+        if metric == "instruction_checks":
+            checks = config["checks"]
+            result["metrics"].update(instruction_pooled_total=len(checks))
+            result["check_policy_version"] = "instruction-checks-v1"
+            result["check_evidence"] = [{"type": check["type"], "passed": False} for check in checks]
         return result
 
     result.update(extracted_answer=raw_answer, normalized_answer=normalize(raw_answer),
@@ -222,20 +230,33 @@ def score(task: str, raw_answer: str | None, references: list, config: dict,
     elif metric == "instruction_checks":
         passed = 0
         malformed = False
+        evidence = []
         checks = config["checks"]
         for check in checks:
+            ok = False
             if check["type"] == "exact_text":
-                passed += raw_answer == check["value"]
+                ok = raw_answer == check["value"]
             elif check["type"] == "json_exact":
                 try:
                     parsed = _json(raw_answer)
                     result.update(extracted_answer=parsed, normalized_answer=parsed)
-                    passed += _json_equal(parsed, check["value"])
+                    ok = _json_equal(parsed, check["value"])
                 except (ValueError, TypeError):
                     malformed = True
+            elif check["type"] == "required_substring":
+                ok = unicodedata.normalize("NFC", check["value"]).casefold() in unicodedata.normalize("NFC", raw_answer).casefold()
+            elif check["type"] == "forbidden_substring":
+                ok = unicodedata.normalize("NFC", check["value"]).casefold() not in unicodedata.normalize("NFC", raw_answer).casefold()
+            elif check["type"] == "exact_word_count":
+                ok = len(WORD.findall(unicodedata.normalize("NFC", raw_answer))) == check["value"]
             else:
                 raise ValueError("Unsupported instruction check")
-        values.update(instruction_checks=passed / len(checks), checks_passed=passed)
+            passed += ok
+            evidence.append({"type": check["type"], "passed": bool(ok)})
+        values.update(instruction_all_checks=float(passed == len(checks)),
+                      instruction_pooled_passed=passed, instruction_pooled_total=len(checks))
+        result["check_evidence"] = evidence
+        result["check_policy_version"] = "instruction-checks-v1"
         result["explanation"] = f"{passed}/{len(checks)} declared checks passed"
         if malformed:
             result["parse_status"] = "malformed_json"

@@ -1,6 +1,14 @@
 # LLM Comparison Lab — Build Status
 
-Last updated: 2026-10-08.
+Last updated: 2026-10-18.
+
+## P1/P2 implementation check / 2026-10-18
+
+- Code inspection confirms split/family-aware import validation, versioned instruction checks, pooled/all-check metrics, explicit stored analysis snapshots, paired-family bootstrap, and descriptive review-overlap code are present. See `METHODOLOGY.md` for behavior and attribution caveats.
+- Dataset/import, local analysis, frozen exports and descriptive review are implemented with offline fixtures; the final full acceptance run and commits are recorded separately below when finished.
+- A newly authored **draft of 5 dev families / 10 items** is included in `datasets/instruction_following_draft_v1.jsonl`. The proposed 40-family 12/8/20 suite is **not complete** and none of the five families has independently verified review. Do not use the draft as held-out benchmark evidence.
+- No new measured study is claimed. Fixture outputs remain synthetic; the previously recorded 10-item/two-route live run is a convenience-sample smoke only.
+- Offline checks after integration: `.venv/bin/python -m pytest -q` from `backend/` → **100 passed**; `.venv/bin/ruff check app tests alembic scripts` → passed. Frontend `npm run typecheck`, `npm run build`, `npm run test:e2e` → passed (2 fixture-browser tests; final E2E rerun after correcting its export-link label). Deprecation and bundle-size warnings do not imply live verification.
 
 ## Current state
 

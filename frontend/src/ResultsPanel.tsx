@@ -8,6 +8,8 @@ type Row = { job_id: number; model_slot: number; provider: string; model_id: str
 type Page = { total: number; offset: number; limit: number; items: Row[] }
 type Summary = { model_slot: number; provider: string; model_id: string; task_type: string; metric: string; scheduled_jobs: number; responses: number; complete: number; truncated: number; parseable: number; metric_eligible: number; missing_reference: number; failures: number; pending: number; cancelled: number; identity_mismatch: number; format_failures: number; quality: number | null; quality_denominator: number; overall_success: number | null; overall_success_denominator: number | null; macro_f1: number | null; latency_sample_count: number; median_request_latency_ms: number | null; p95_request_latency_ms: number | null; usage_sample_count: number; prompt_tokens_total: number | null; completion_tokens_total: number | null }
 export type DashboardReport = { summaries: Summary[]; common_completed: { task_type: string; metric: string; count: number; keys: { item_id: string; repetition: number; variant: string }[]; models: { model_slot: number; quality: number | null; omitted_count: number }[] }[] }
+type AnalysisResult = { task_type: string; metric: string; family_n: number | null; model_means: Record<string, number | null>; paired_delta: number | null; interval_95: { low: number; high: number; degenerate?: boolean } | null; missing_family_metadata: boolean; omitted_families: (string | number)[][] }
+type Analysis = { id: number | string; sha256: string; manifest: Record<string, unknown>; results: AnalysisResult[] }
 
 const show = (value: unknown) => value == null ? 'Not reported' : String(value)
 
@@ -15,10 +17,33 @@ export default function ResultsPanel({ experimentId, report }: { experimentId: n
   const [metric, setMetric] = useState('all'), [model, setModel] = useState('all'), [task, setTask] = useState('all'), [status, setStatus] = useState('all')
   const [offset, setOffset] = useState(0), [page, setPage] = useState<Page | null>(null), [loading, setLoading] = useState(false), [error, setError] = useState('')
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null)
+  const [analyses, setAnalyses] = useState<Analysis[]>([]), [analysisId, setAnalysisId] = useState(''), [analysisBusy, setAnalysisBusy] = useState(false), [analysisError, setAnalysisError] = useState('')
   const rows = useMemo(() => report.summaries.filter(row => (metric === 'all' || row.metric === metric) && (model === 'all' || String(row.model_slot) === model) && (task === 'all' || row.task_type === task)), [report, metric, model, task])
   const tasks = [...new Set(report.summaries.map(row => row.task_type))], metrics = [...new Set(report.summaries.map(row => row.metric))]
   useEffect(() => { setOffset(0); setExpandedJobId(null) }, [experimentId, metric, model, task, status])
   useEffect(() => { setExpandedJobId(null) }, [offset])
+  useEffect(() => {
+    let active = true
+    setAnalysisError(''); setAnalysisId('')
+    api<Analysis[] | { items: Analysis[] }>(`/api/experiments/${experimentId}/analyses`).then(data => {
+      if (!active) return
+      const snapshots = Array.isArray(data) ? data : data.items
+      setAnalyses(snapshots)
+      if (snapshots[0]) setAnalysisId(String(snapshots[0].id))
+    }).catch((cause: Error) => { if (active) { setAnalyses([]); setAnalysisError(cause.message) } })
+    return () => { active = false }
+  }, [experimentId])
+  const selectedAnalysis = analyses.find(snapshot => String(snapshot.id) === analysisId)
+  async function createAnalysis() {
+    setAnalysisBusy(true); setAnalysisError('')
+    try {
+      const created = await api<Analysis>(`/api/experiments/${experimentId}/analyses`, { method: 'POST' })
+      const snapshot = created.results ? created : await api<Analysis>(`/api/experiments/${experimentId}/analyses/${created.id}`)
+      setAnalyses(current => [snapshot, ...current.filter(row => String(row.id) !== String(snapshot.id))])
+      setAnalysisId(String(snapshot.id))
+    } catch (cause) { setAnalysisError((cause as Error).message) }
+    finally { setAnalysisBusy(false) }
+  }
   useEffect(() => {
     let active = true
     setLoading(true); setError('')
@@ -34,7 +59,23 @@ export default function ResultsPanel({ experimentId, report }: { experimentId: n
   return <section className="mt-4 space-y-4 border-t pt-4" aria-labelledby={`results-${experimentId}`}>
     <h4 id={`results-${experimentId}`} className="font-semibold">Results dashboard</h4>
     <p>Route measurements reflect this provider/model route under the recorded run conditions; they do not measure intrinsic model speed.</p>
-    <nav aria-label={`Export experiment ${experimentId}`} className="flex flex-wrap gap-3">{(['csv', 'json', 'html', 'markdown'] as const).map(format => <a key={format} className="rounded border px-3 py-2 underline" href={`/api/experiments/${experimentId}/export?format=${format}`} download={`experiment-${experimentId}.${format}`}>Download {format === 'json' ? 'JSON manifest' : format.toUpperCase()}</a>)}</nav>
+     <nav aria-label={`Export experiment ${experimentId}`} className="flex flex-wrap gap-3">{(['csv', 'json', 'html', 'markdown'] as const).map(format => <a key={format} className="rounded border px-3 py-2 underline" href={`/api/experiments/${experimentId}/export?format=${format}`} download={`experiment-${experimentId}.${format}`}>Download {format === 'json' ? 'JSON manifest' : format.toUpperCase()}</a>)}</nav>
+     <section aria-labelledby={`analysis-${experimentId}`} className="space-y-3 rounded border p-3">
+       <h5 id={`analysis-${experimentId}`} className="font-medium">Immutable local analysis snapshots</h5>
+       <p>Creating a snapshot computes and stores this experiment’s analysis locally. It makes no provider/network requests. These descriptive comparisons do not establish an objective winner; intervals are exploratory and conditional on observed complete families.</p>
+       <button type="button" className="rounded border px-3 py-2" disabled={analysisBusy} onClick={createAnalysis}>{analysisBusy ? 'Creating…' : 'Create analysis snapshot'}</button>
+       {analyses.length > 0 && <label className="block">Select saved snapshot <select className="ml-2 rounded border p-2" value={analysisId} onChange={event => setAnalysisId(event.target.value)}>{analyses.map(snapshot => <option key={snapshot.id} value={snapshot.id}>#{snapshot.id} · {snapshot.sha256.slice(0,12)}</option>)}</select></label>}
+       {analysisError && <p role="alert">Analysis snapshot: {analysisError}</p>}
+       {!analyses.length && !analysisError && <p>No analysis snapshots saved yet.</p>}
+       {selectedAnalysis && <>
+         <p>Snapshot #{selectedAnalysis.id} · SHA-256 <code className="break-all">{selectedAnalysis.sha256}</code></p>
+          <nav aria-label={`Export report with analysis snapshot ${selectedAnalysis.id}`} className="flex flex-wrap gap-3">{(['json','csv','html','markdown'] as const).map(format => <a key={format} className="rounded border px-3 py-2 underline" href={`/api/experiments/${experimentId}/export?analysis_id=${encodeURIComponent(selectedAnalysis.id)}&format=${format}`} download={`experiment-${experimentId}-analysis-${selectedAnalysis.id}.${format}`}>Download report + snapshot {format.toUpperCase()}</a>)}</nav>
+          <p>The selected analysis is frozen; the surrounding experiment report shows current job and review state and can change later.</p>
+         <p>Provenance manifest: <code className="break-all">{JSON.stringify(selectedAnalysis.manifest)}</code></p>
+         {selectedAnalysis.results.length === 0 ? <p>This snapshot contains no paired metric results (for example, legacy data without compatible family metadata).</p> : <div className="overflow-x-auto"><table className="w-full border-collapse text-left text-sm"><caption className="sr-only">Paired family analysis snapshot results</caption><thead><tr>{['Task / metric','Complete families (n)','Paired delta (slot 2 − slot 1)','Exploratory 95% interval','Omitted families / missingness'].map(label => <th className="border p-2" key={label}>{label}</th>)}</tr></thead><tbody>{selectedAnalysis.results.map((result,index) => <tr key={`${result.task_type}-${result.metric}-${index}`}><td className="border p-2">{result.task_type} / {result.metric}</td><td className="border p-2">{result.family_n ?? 'Unavailable (family metadata missing)'}</td><td className="border p-2">{result.paired_delta === null ? 'Unavailable' : result.paired_delta.toFixed(4)}</td><td className="border p-2">{result.interval_95 ? `${result.interval_95.low.toFixed(4)} to ${result.interval_95.high.toFixed(4)}${result.interval_95.degenerate ? ' (degenerate)' : ''}` : 'Withheld/unavailable (fewer than 10 families or no family metadata)'}</td><td className="border p-2">{result.missing_family_metadata ? 'Legacy: no family metadata; independence not inferred' : result.omitted_families.length ? `${result.omitted_families.length} omitted: ${result.omitted_families.map(family => family.join(' / ')).join(', ')}` : 'None'}</td></tr>)}</tbody></table></div>}
+         <p>Missing responses can selectively affect which families are complete. Intervals do not correct missingness or establish representativeness.</p>
+       </>}
+     </section>
     <div className="flex flex-wrap gap-3">
       <label>Metric <select className="rounded border p-2" value={metric} onChange={e => setMetric(e.target.value)}><option value="all">All metrics</option>{metrics.map(v => <option key={v}>{v}</option>)}</select></label>
       <label>Model <select className="rounded border p-2" value={model} onChange={e => setModel(e.target.value)}><option value="all">All models</option>{[...new Set(report.summaries.map(row => row.model_slot))].map(slot => <option key={slot} value={slot}>{report.summaries.find(row => row.model_slot === slot)?.provider} / {report.summaries.find(row => row.model_slot === slot)?.model_id}</option>)}</select></label>
@@ -42,9 +83,9 @@ export default function ResultsPanel({ experimentId, report }: { experimentId: n
       <label>Response status <select className="rounded border p-2" value={status} onChange={e => setStatus(e.target.value)}>{['all','answered','malformed','truncated','failed','pending','cancelled'].map(v => <option key={v}>{v}</option>)}</select></label>
     </div>
     {!rows.length ? <p>No aggregate results match these filters.</p> : <>
-      <h5 className="font-medium">Task metric quality (percent; denominator = metric-eligible responses)</h5>
+       <h5 className="font-medium">Task metric quality (percent; denominator = metric-eligible responses, or declared checks for pooled instruction accuracy)</h5>
       <div role="img" aria-label="Bar chart of task metric quality percentages by model route" className="h-80 w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={chart} accessibilityLayer margin={{ bottom: 65, left: 10, right: 15 }}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="label" angle={-35} textAnchor="end" interval={0} height={90}/><YAxis domain={[0,100]} label={{ value: 'Quality (%)', angle: -90, position: 'insideLeft' }}/><Tooltip/><Bar dataKey="quality" name="Quality (%)" fill="#334155"/></BarChart></ResponsiveContainer></div>
-      <div className="overflow-x-auto"><table className="w-full border-collapse text-left text-sm"><caption className="sr-only">Filtered task metrics and explicit denominators</caption><thead><tr>{['Route','Task / metric','Quality (eligible responses)','Complete / scheduled','Failure / pending / cancelled','Truncated / malformed / mismatch','Median / p95 route latency (ms; n)','Usage samples','Prompt / completion tokens','Overall success (scheduled denominator)'].map(x=><th className="border p-2" key={x}>{x}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={`${r.model_slot}-${r.task_type}-${r.metric}-${i}`}><td className="border p-2">{r.provider} / {r.model_id}</td><td className="border p-2">{r.task_type} / {r.metric}{r.macro_f1 !== null ? `; macro F1 ${r.macro_f1.toFixed(3)}` : ''}</td><td className="border p-2">{r.quality === null ? '—' : `${(r.quality*100).toFixed(1)}% (${r.quality_denominator} eligible)`}</td><td className="border p-2">{r.complete} / {r.scheduled_jobs}</td><td className="border p-2">{r.failures} / {r.pending} / {r.cancelled}</td><td className="border p-2">{r.truncated} / {r.format_failures} / {r.identity_mismatch}</td><td className="border p-2">{show(r.median_request_latency_ms)} / {show(r.p95_request_latency_ms)} (n={r.latency_sample_count})</td><td className="border p-2">{r.usage_sample_count}</td><td className="border p-2">{show(r.prompt_tokens_total)} / {show(r.completion_tokens_total)}</td><td className="border p-2">{r.overall_success === null ? '—' : `${(r.overall_success*100).toFixed(1)}% (${r.overall_success_denominator} scheduled)`}</td></tr>)}</tbody></table></div>
+       <div className="overflow-x-auto"><table className="w-full border-collapse text-left text-sm"><caption className="sr-only">Filtered task metrics and explicit denominators</caption><thead><tr>{['Route','Task / metric','Quality (declared checks for pooled instruction accuracy; eligible responses otherwise)','Complete / scheduled','Failure / pending / cancelled','Truncated / malformed / mismatch','Median / p95 route latency (ms; n)','Usage samples','Prompt / completion tokens','Overall success (scheduled denominator)'].map(x=><th className="border p-2" key={x}>{x}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={`${r.model_slot}-${r.task_type}-${r.metric}-${i}`}><td className="border p-2">{r.provider} / {r.model_id}</td><td className="border p-2">{r.task_type} / {r.metric}{r.macro_f1 !== null ? `; macro F1 ${r.macro_f1.toFixed(3)}` : ''}</td><td className="border p-2">{r.quality === null ? '—' : `${(r.quality*100).toFixed(1)}% (${r.quality_denominator} ${r.metric === 'instruction_pooled_passed' ? 'checks' : 'eligible'})`}</td><td className="border p-2">{r.complete} / {r.scheduled_jobs}</td><td className="border p-2">{r.failures} / {r.pending} / {r.cancelled}</td><td className="border p-2">{r.truncated} / {r.format_failures} / {r.identity_mismatch}</td><td className="border p-2">{show(r.median_request_latency_ms)} / {show(r.p95_request_latency_ms)} (n={r.latency_sample_count})</td><td className="border p-2">{r.usage_sample_count}</td><td className="border p-2">{show(r.prompt_tokens_total)} / {show(r.completion_tokens_total)}</td><td className="border p-2">{r.overall_success === null ? '—' : `${(r.overall_success*100).toFixed(1)}% (${r.overall_success_denominator} scheduled)`}</td></tr>)}</tbody></table></div>
       <h5 className="font-medium">Common-completed coverage (same item, repetition and variant)</h5>
       <ul>{report.common_completed.filter(r => (task === 'all' || r.task_type === task) && (metric === 'all' || r.metric === metric)).map((r,i)=><li key={`${r.task_type}-${r.metric}-${i}`}>{r.task_type} / {r.metric}: {r.count} shared keys{r.models.map(m=>` · slot ${m.model_slot}: ${m.quality === null ? '—' : `${(m.quality*100).toFixed(1)}%`} (${m.omitted_count} omitted)`)}</li>)}</ul>
     </>}

@@ -114,6 +114,7 @@ def test_denominators_common_missing_identity_and_detail(tmp_path):
             job.status = "failed"
     for i in range(10):
         save(factory, eid, 1, i, "A", mismatch=i == 9)
+    assert client.post(f"/api/experiments/{eid}/analyses").status_code == 201
     url = f"/api/experiments/{eid}/results"
     first = client.get(url)
     assert first.status_code == 200, first.text
@@ -150,6 +151,7 @@ def test_missing_truncated_malformed_are_distinct(tmp_path):
         item = session.scalar(select(DatasetItem).where(DatasetItem.external_id == "item-2"))
         item.reference_answers = []
     save(factory, eid, 0, 2, "A")
+    assert client.post(f"/api/experiments/{eid}/analyses").status_code == 201
     result = client.get(f"/api/experiments/{eid}/results").json()["summaries"][0]
     assert (result["scheduled_jobs"], result["responses"], result["complete"], result["truncated"],
             result["missing_reference"], result["pending"], result["parseable"], result["format_failures"],
@@ -173,7 +175,33 @@ def test_classification_macro_f1_uses_eligible_predictions(tmp_path):
             item.reference_answers = ["A" if item.external_id == "item-0" else "B"]
     save(factory, eid, 0, 0, "A")
     save(factory, eid, 0, 1, "A")
+    assert client.post(f"/api/experiments/{eid}/analyses").status_code == 201
     summary = client.get(f"/api/experiments/{eid}/results", params={"model_slot": 0}).json()["summaries"][0]
     assert summary["quality"] == 0.5
     assert summary["macro_f1"] == 1 / 3  # A: 2/3, B: 0
+    engine.dispose()
+
+
+def test_instruction_pooled_common_quality_counts_checks_not_responses(tmp_path):
+    client, factory, engine, eid = setup(tmp_path, 2)
+    with factory.begin() as session:
+        items = session.scalars(select(DatasetItem).order_by(DatasetItem.external_id)).all()
+        for index, item in enumerate(items):
+            item.task_type = "instruction_following"
+            item.reference_answers = ["ok"]
+            item.scoring_config = {"metric": "instruction_checks", "checks": [
+                {"type": "required_substring", "value": "ok"},
+                *([{"type": "forbidden_substring", "value": "bad"}] * index)]}
+    for slot in (0, 1):
+        save(factory, eid, slot, 0, "ok")
+        save(factory, eid, slot, 1, "ok bad")
+    assert client.post(f"/api/experiments/{eid}/analyses").status_code == 201
+    report = client.get(f"/api/experiments/{eid}/results").json()
+    pooled = next(row for row in report["summaries"] if row["model_slot"] == 0 and
+                  row["metric"] == "instruction_pooled_passed")
+    assert pooled["instruction_pooled_passed"] == 2
+    assert pooled["instruction_pooled_total"] == 3
+    assert pooled["quality"] == 2 / 3
+    common = next(row for row in report["common_completed"] if row["metric"] == "instruction_pooled_passed")
+    assert common["models"][0]["quality"] == 2 / 3
     engine.dispose()

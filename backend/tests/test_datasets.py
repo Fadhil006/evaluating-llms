@@ -59,10 +59,10 @@ def test_preview_save_manifest_roundtrip_and_duplicate_version(tmp_path):
     detail = client.get(f"/api/datasets/{dataset_id}/versions/v1").json()
     assert detail["items"][0]["license"] == detail["items"][0]["source"] == "unknown"
     assert detail["content_sha256"] == json_preview.json()["content_sha256"]
-    assert send(client, [item], save=True, params={"name": "test", "version": "v2", "dataset_id": dataset_id}).status_code == 422
-    assert client.get("/api/datasets").json()[0]["versions"] == [{"id": 1, "version": "v1"}]
+    assert send(client, [item], save=True, params={"name": "test", "version": "v2", "dataset_id": dataset_id}).status_code == 201
+    assert client.get("/api/datasets").json()[0]["versions"] == [{"id": 1, "version": "v1"}, {"id": 2, "version": "v2"}]
     with Session(engine) as session:
-        assert session.scalar(select(func.count()).select_from(DatasetItem)) == 1
+        assert session.scalar(select(func.count()).select_from(DatasetItem)) == 2
     engine.dispose()
 
 
@@ -95,6 +95,18 @@ def test_duplicate_normalized_content_acknowledgment(tmp_path):
     saved = send(client, [row(), other], save=True, params={"name": "test", "version": "v1", "acknowledge_duplicates": "true"})
     assert saved.status_code == 201, saved.text
     assert saved.json()["manifest"]["duplicate_content_acknowledged"] is True
+    engine.dispose()
+
+
+def test_same_import_cannot_acknowledge_cross_split_prompt_leakage(tmp_path):
+    client, engine = client_for(tmp_path)
+    dev = row() | {"split": "dev", "family_id": "local:dev", "variant_id": "original"}
+    test = row() | {"id": "two", "split": "test", "family_id": "local:test",
+                    "variant_id": "original", "reference_answers": ["green"]}
+    response = send(client, [dev, test], save=True,
+                    params={"name": "test", "version": "v1", "acknowledge_duplicates": "true"})
+    assert response.status_code == 422
+    assert any(err["field"] == "split" for err in response.json()["detail"]["errors"])
     engine.dispose()
 
 
@@ -146,4 +158,58 @@ def test_dataset_routes_integrated_in_main_app(tmp_path):
     assert detail["manifest"]["license"] == "CC0-1.0"
     assert api.get("/api/datasets").json()[0]["origin"] == "original"
     engine = make_engine(Settings(database_path=path, demo_database_path=tmp_path / "demo.sqlite3"))
+    engine.dispose()
+
+
+def test_split_family_contract_cross_version_and_same_split_reimport(tmp_path):
+    client, engine = client_for(tmp_path)
+    first = row() | {"split": "dev", "family_id": "study:family-1", "variant_id": "original"}
+    saved = send(client, [first], save=True)
+    assert saved.status_code == 201, saved.text
+    dataset_id = saved.json()["dataset_id"]
+    again = send(client, [first], save=True,
+                 params={"name": "test", "version": "v2", "dataset_id": dataset_id})
+    assert again.status_code == 201, again.text
+    leaked = first | {"id": "new-id", "split": "test", "family_id": "study:other"}
+    rejected = send(client, [leaked], save=True,
+                    params={"name": "test", "version": "v3", "dataset_id": dataset_id})
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["errors"][0]["field"] == "content"
+    family_leak = first | {"id": "changed", "prompt": "Different?", "split": "test"}
+    rejected = send(client, [family_leak], save=True,
+                    params={"name": "test", "version": "v4", "dataset_id": dataset_id})
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["errors"][0]["field"] == "family_id"
+    answer_variant = first | {"id": "answer-change", "prompt": "Different question?",
+                              "reference_answers": ["green"], "variant_id": "changed-answer"}
+    incompatible = send(client, [first, answer_variant])
+    assert incompatible.status_code == 422
+    assert incompatible.json()["detail"]["errors"][0]["field"] == "variant_id"
+    changed_reference = send(client, [answer_variant], save=True,
+                             params={"name": "test", "version": "v5", "dataset_id": dataset_id})
+    assert changed_reference.status_code == 422
+    assert changed_reference.json()["detail"]["errors"][0]["field"] == "family_id"
+    engine.dispose()
+
+
+def test_nonfinite_provenance_is_reported_as_import_validation_error():
+    from app.services.datasets import ImportProblem, validate
+
+    invalid = row() | {"provenance": {"confidence": float("nan")}}
+    try:
+        validate([(1, invalid)])
+    except ImportProblem as exc:
+        assert exc.errors[0]["field"] in {"provenance", "row"}
+    else:
+        raise AssertionError("non-finite provenance unexpectedly validated")
+
+
+def test_malformed_split_and_review_metadata_are_validation_errors(tmp_path):
+    client, engine = client_for(tmp_path)
+    malformed = row() | {"split": ["test"], "family_id": ["family"],
+                         "review_status": ["reviewed"]}
+    response = send(client, [malformed])
+    assert response.status_code == 422
+    fields = {err["field"] for err in response.json()["detail"]["errors"]}
+    assert {"split", "family_id", "review_status"} <= fields
     engine.dispose()

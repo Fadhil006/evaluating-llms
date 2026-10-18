@@ -113,6 +113,11 @@ class DatasetItem(Record):
     tags: Mapped[list] = mapped_column(JSON, default=list)
     source: Mapped[str | None] = mapped_column(String(512))
     license: Mapped[str | None] = mapped_column(String(100))
+    split: Mapped[str] = mapped_column(String(40), default="legacy_unknown", server_default="legacy_unknown")
+    family_id: Mapped[str | None] = mapped_column(String(255))
+    variant_id: Mapped[str | None] = mapped_column(String(255))
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+    review_status: Mapped[str] = mapped_column(String(40), default="unreviewed", server_default="unreviewed")
 
 
 class Experiment(Record):
@@ -248,3 +253,12 @@ class ExperimentEvent(Record):
     experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id"))
     event_type: Mapped[str] = mapped_column(String(80))
     details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AnalysisSnapshot(Record):
+    __tablename__ = "analysis_snapshots"
+
+    experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id"), index=True)
+    manifest: Mapped[dict] = mapped_column(JSON)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    content_sha256: Mapped[str] = mapped_column(String(64), index=True)

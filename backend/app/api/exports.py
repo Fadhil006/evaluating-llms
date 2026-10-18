@@ -9,9 +9,10 @@ router = APIRouter(prefix="/api/experiments", tags=["exports"])
 
 @router.get("/{experiment_id}/export")
 def export_experiment(request: Request, experiment_id: int,
-                      format: str = Query("json", pattern="^(csv|json|html|markdown)$")):
+                      format: str = Query("json", pattern="^(csv|json|html|markdown)$"),
+                      analysis_id: int | None = None):
     with request.app.state.sessions.begin() as session:
-        data = report_data(session, experiment_id, getattr(request.app.state, "export_redactions", []))
+        data = report_data(session, experiment_id, getattr(request.app.state, "export_redactions", []), analysis_id)
     if data is None:
         raise HTTPException(404, "Experiment not found")
     renderer, media = {"json": (render_json, "application/json"),

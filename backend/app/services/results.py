@@ -23,13 +23,14 @@ def score_response(session: Session, response: ModelResponse) -> list[MetricResu
     """Persist only missing metric/version pairs; never alter an accepted response."""
     job = session.get(GenerationJob, response.job_id)
     item = session.get(DatasetItem, job.dataset_item_id)
-    if item.reference_answers:
+    if item.reference_answers or item.task_type == "instruction_following":
         result = scoring.score(item.task_type, response.raw_text, item.reference_answers,
                                item.scoring_config, truncated=response.finish_reason == "length")
     else:
         # No reference cannot be graded, even when the answer is well formed.
         result = scoring.score(item.task_type, None, [], item.scoring_config)
         result.update(parse_status="missing_reference", explanation="No reference answer available")
+    instruction = item.task_type == "instruction_following"
     existing = {(row.metric, row.scorer_version) for row in session.scalars(select(MetricResult).where(
         MetricResult.response_id == response.id))}
     added = []
@@ -39,10 +40,15 @@ def score_response(session: Session, response: ModelResponse) -> list[MetricResu
         normalized = result["normalized_answer"]
         if normalized is not None and not isinstance(normalized, str):
             normalized = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        explanation = (f"{result['explanation']} (normalization={result['normalization_version']}; "
+                       f"tokenizer={result['tokenizer_version']}; scorer={result['scorer_version']})")
+        if instruction:
+            explanation += "; instruction_evidence=" + json.dumps(
+                {"policy_version": result.get("check_policy_version"),
+                 "checks": result.get("check_evidence", [])}, separators=(",", ":"), ensure_ascii=False)
         row = MetricResult(response_id=response.id, metric=metric, scorer_version=result["scorer_version"],
                            value=value, normalized_answer=normalized, parse_status=result["parse_status"],
-                           explanation=f"{result['explanation']} (normalization={result['normalization_version']}; "
-                                       f"tokenizer={result['tokenizer_version']}; scorer={result['scorer_version']})")
+                           explanation=explanation)
         session.add(row)
         added.append(row)
     return added
@@ -69,10 +75,15 @@ def _records(session: Session, experiment_id: int):
     responses = {row.job_id: row for row in session.scalars(select(ModelResponse).where(
         ModelResponse.job_id.in_([job.id for job in jobs])))} if jobs else {}
     scores = defaultdict(dict)
+    metric_versions = {"instruction_all_checks": scoring.INSTRUCTION_CHECK_SCORER_VERSION,
+                       "instruction_pooled_passed": scoring.INSTRUCTION_CHECK_SCORER_VERSION,
+                       "instruction_pooled_total": scoring.INSTRUCTION_CHECK_SCORER_VERSION}
     if responses:
         for row in session.scalars(select(MetricResult).where(MetricResult.response_id.in_(
-            [response.id for response in responses.values()]), MetricResult.scorer_version == scoring.SCORER_VERSION)):
-            scores[row.response_id][row.metric] = row
+                [response.id for response in responses.values()]))):
+            wanted = metric_versions.get(row.metric, scoring.SCORER_VERSION)
+            if row.scorer_version == wanted:
+                scores[row.response_id][row.metric] = row
     return jobs, items, responses, scores
 
 
@@ -116,7 +127,7 @@ def results(session: Session, experiment_id: int, selected_slots: list[int] | No
     eligible_keys = defaultdict(set)
     values = {}
     binary = {"label_accuracy", "raw_exact_match", "normalized_exact_match", "numeric_exact",
-              "json_valid", "schema_valid", "field_exact", "instruction_checks"}
+              "json_valid", "schema_valid", "field_exact", "instruction_all_checks"}
     for (slot, task, metric), rows in sorted(groups.items()):
         counts = {name: 0 for name in ("scheduled_jobs", "responses", "complete", "truncated", "parseable",
                                         "metric_eligible", "missing_reference", "failures", "pending", "cancelled",
@@ -125,6 +136,7 @@ def results(session: Session, experiment_id: int, selected_slots: list[int] | No
         classification = []
         labels = None
         successes = 0
+        pooled_passed = pooled_total = 0
         for job, item, response in rows:
             counts["scheduled_jobs"] += 1
             if job.status in {"pending", "retry-wait", "leased", "interrupted"} and response is None:
@@ -151,10 +163,17 @@ def results(session: Session, experiment_id: int, selected_slots: list[int] | No
                 counts["format_failures"] += 1
             if not item.reference_answers:
                 counts["missing_reference"] += 1
-            if response.identity_mismatch or score.value is None or not item.reference_answers:
+            if (response.identity_mismatch or score.value is None or
+                    (not item.reference_answers and task != "instruction_following")):
                 continue
             counts["metric_eligible"] += 1
             graded.append(score.value)
+            if metric == "instruction_pooled_passed":
+                passed_score = scores[response.id].get("instruction_pooled_passed")
+                total_score = scores[response.id].get("instruction_pooled_total")
+                if passed_score and total_score and passed_score.value is not None and total_score.value is not None:
+                    pooled_passed += passed_score.value
+                    pooled_total += total_score.value
             if task == "classification" and metric == "label_accuracy":
                 labels = item.scoring_config["labels"]
                 classification.append((item.reference_answers[0], {
@@ -164,12 +183,26 @@ def results(session: Session, experiment_id: int, selected_slots: list[int] | No
             eligible_keys[(task, metric, slot)].add(key)
             values[(task, metric, slot, key)] = score.value
         denominator = len(graded)
+        quality = sum(graded) / denominator if denominator else None
+        quality_denominator = denominator
+        if metric == "instruction_pooled_passed":
+            quality = pooled_passed / pooled_total if pooled_total else None
+            quality_denominator = pooled_total
+        elif metric == "instruction_pooled_total":
+            quality = None
         latencies = sorted(latency_by_slot[slot])
         usages = usage_by_slot[slot]
         summaries.append({"model_slot": slot, **identities[slot], "task_type": task, "metric": metric,
-                          "scorer_version": scoring.SCORER_VERSION, **counts,
-                          "quality": sum(graded) / denominator if denominator else None,
-                          "quality_denominator": denominator,
+                           "scorer_version": (scoring.INSTRUCTION_CHECK_SCORER_VERSION
+                                              if metric in {"instruction_all_checks", "instruction_pooled_passed",
+                                                            "instruction_pooled_total"}
+                                              else scoring.SCORER_VERSION), **counts,
+                           "quality": quality,
+                           "instruction_pooled_passed": pooled_passed if metric == "instruction_pooled_passed" else None,
+                           "instruction_pooled_total": pooled_total if metric == "instruction_pooled_passed" else None,
+                           "instruction_pooled_accuracy": (pooled_passed / pooled_total if pooled_total else None)
+                           if metric == "instruction_pooled_passed" else None,
+                           "quality_denominator": quality_denominator,
                           "macro_f1": scoring.classification_macro_f1(classification, labels) if classification else None,
                           "successes": successes if metric in binary else None,
                            "overall_success": successes / counts["scheduled_jobs"] if metric in binary and counts["scheduled_jobs"] else None,
@@ -184,6 +217,16 @@ def results(session: Session, experiment_id: int, selected_slots: list[int] | No
                            "completion_tokens_total": (sum(u["completion_tokens"] for u in usages if "completion_tokens" in u)
                                                        if any("completion_tokens" in u for u in usages) else None)})
 
+    def common_quality(task, metric, slot, keys):
+        if not keys or metric == "instruction_pooled_total":
+            return None
+        numerator = sum(values[(task, metric, slot, key)] for key in keys)
+        if metric == "instruction_pooled_passed":
+            denominator = sum(values.get((task, "instruction_pooled_total", slot, key), 0)
+                              for key in keys)
+            return numerator / denominator if denominator else None
+        return numerator / len(keys)
+
     common = []
     for task, metric in sorted({(row["task_type"], row["metric"]) for row in summaries}):
         sets = [eligible_keys[(task, metric, slot)] for slot in selected_slots]
@@ -195,8 +238,7 @@ def results(session: Session, experiment_id: int, selected_slots: list[int] | No
                                    "omitted_count": len(eligible_keys[(task, metric, slot)] - intersection),
                                    "omitted_keys": [{"item_id": i, "repetition": r, "variant": v} for i, r, v in
                                                     sorted(eligible_keys[(task, metric, slot)] - intersection)],
-                                   "quality": (sum(values[(task, metric, slot, key)] for key in intersection) /
-                                               len(intersection)) if intersection else None}
+                                    "quality": common_quality(task, metric, slot, intersection)}
                                   for slot in selected_slots]})
     return {"experiment_id": experiment_id, "selected_model_slots": selected_slots,
             "summaries": summaries, "common_completed": common}
