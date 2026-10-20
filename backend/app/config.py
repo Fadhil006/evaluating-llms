@@ -1,5 +1,6 @@
 """Local settings. Never serialize this object or print raw validation exceptions."""
 
+import os
 from pathlib import Path
 from tempfile import TemporaryFile
 from typing import Literal
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=os.environ.get("LCLAB_ENV_FILE", str(ROOT / ".env")), extra="ignore")
 
     execution_mode: Literal["live", "demo"] = "live"
     database_path: Path = Path("data/lab.sqlite3")

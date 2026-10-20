@@ -14,10 +14,17 @@ test('provider filters preserve routes, permit cross-provider identity and expla
   const models = [model(100, 'openrouter', 'same'), model(101, 'openrouter', 'second'), model(102, 'opencode_zen', 'same'),
     model(103, 'opencode_zen', 'second'), model(104, 'openrouter', 'expired', 'stale_pricing'),
     model(105, 'opencode_zen', 'missing-key', 'verified_free', false), model(106, 'opencode_zen', 'unsupported', 'unsupported_endpoint')]
-  await page.route('**/api/models', route => route.fulfill({ json: models }))
+  let catalogLoaded = false
+  await page.route('**/api/models/refresh', route => {
+    catalogLoaded = true
+    return route.fulfill({ json: { openrouter: { status: 'reachable' }, opencode_zen: { status: 'reachable' } } })
+  })
+  await page.route('**/api/models', route => route.fulfill({ json: catalogLoaded ? models : [] }))
   await page.route('**/api/experiments', route => route.fulfill({ json: [] }))
   await page.goto('/experiments')
+  await expect(page.getByText('Model catalog loaded. Choose questions, then select Model A and Model B.')).toBeVisible()
   await page.getByRole('button', { name: 'Continue to models' }).click()
+  await page.getByLabel('Show unavailable models and pricing restrictions').check()
   const a = page.getByRole('combobox', { name: 'Model A', exact: true })
   const b = page.getByRole('combobox', { name: 'Model B', exact: true })
   await page.getByLabel('Provider filter').selectOption('openrouter')

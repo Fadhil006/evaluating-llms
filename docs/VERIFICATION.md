@@ -1,5 +1,24 @@
 # Guided comparison verification — 2026-10-20
 
+## Live-mode follow-up
+
+The user requested real mode rather than the synthetic demonstration. Port 18202
+now serves live mode with the existing server-side credentials and a separate
+`data/beginner-live.sqlite3` database. No generation was started for verification.
+Both real catalogs refreshed successfully (468 OpenRouter entries, 44 Zen
+entries at observation); **19 OpenRouter and 8 Zen routes** passed current
+eligibility checks. A visible browser selected
+`openrouter / google/gemma-4-31b-it:free` and `opencode_zen / big-pickle`, retained
+the choices across provider filters, and verified the enabled Start button and
+20-request review estimate. The verification script blocked create/start/resume
+mutations. Authenticated generation remains untested.
+
+Follow-up checks: frontend typecheck/build passed, **5 browser tests passed**,
+and the full backend suite passed (**106 tests**); Ruff passed. The new environment-file regression
+checks legacy-key loading without copying secrets. See
+[real model selection](screenshots/live-model-selection.png) and
+[live review before start](screenshots/live-review.png).
+
 Final checks ran from `/home/fadhil/Projects/llm-comparison-beginner` on branch
 `beginner-comparison`, using the existing installed Python environment and frontend
 dependencies through ignored local symlinks. The implementation commit is `00fd193`;

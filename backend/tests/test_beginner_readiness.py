@@ -1,9 +1,27 @@
+import os
+import subprocess
+import sys
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from test_experiments import setup
 
 from app.models import ModelSnapshot, Provider
 from app.providers.policy import REQUIRED
+
+
+def test_external_env_file_loads_legacy_key_without_copying_secrets(tmp_path):
+    env_file = tmp_path / "provider.env"
+    env_file.write_text("OPENCODE_API_KEY=test-only-legacy\nOPENROUTER_API_KEY=test-only-router\n")
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENROUTER_API_KEY"}}
+    env["LCLAB_ENV_FILE"] = str(env_file)
+    result = subprocess.run([sys.executable, "-c", ("from app.config import Settings; s=Settings(); "
+                             "assert s.opencode_zen_api_key.get_secret_value() == 'test-only-legacy'; "
+                             "assert s.openrouter_api_key.get_secret_value() == 'test-only-router'")],
+                            env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == ""
 
 
 def test_estimate_requires_live_credentials_and_demo_is_fixture_only(tmp_path):

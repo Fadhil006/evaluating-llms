@@ -6,7 +6,28 @@ Implementation lives on branch `beginner-comparison` in `/home/fadhil/Projects/l
 
 The original server at `http://127.0.0.1:18201` was inspected, not restarted. Its process uses the original backend and a separate database at `/home/fadhil/Documents/Codex/2026-10-18/skill-creator-home-fadhil-codex-skills-3/work/web-validation/live-test.sqlite3`. On inspection, experiment 1 was paused for `rate_limit`: 0 successful, 1 failed, 19 pending; one consumed attempt. The earlier uncertain outcome has not been retried. Its account observation of 0/50 usage does not prove a model is available.
 
-## Run the safe demonstration
+## Run the real local app (current instance)
+
+The current server at **http://127.0.0.1:18202/experiments** is in **live mode**.
+It reads the existing credential file without copying or exposing its values:
+
+```bash
+bash scripts/run-live.sh /home/fadhil/Projects/evaluating_llms/evaluating_llms-2.0/.env
+```
+
+Run this from `/home/fadhil/Projects/llm-comparison-beginner`. It uses the separate
+`data/beginner-live.sqlite3` database and leaves the earlier server/database alone.
+Starting the server does not start or resume a comparison. Empty catalogs load
+automatically; selectors default to eligible choices, with unavailable choices
+available through an explicit checkbox and explanatory details. At verification,
+19 OpenRouter routes and 8 Zen routes were eligible; these counts can change.
+Credential presence and catalog reachability do not prove generation success.
+
+Use `SHOW_BROWSER=1 node scripts/verify-live-selection.mjs` from `frontend/` to
+check real catalog selection and the review screen without creating, starting,
+or resuming any comparison. This script blocks those mutation requests.
+
+## Optional synthetic demonstration
 
 The implementation worktree reuses the original installed backend virtual environment and frontend `node_modules` through ignored local symlinks. A fresh checkout instead needs the normal installation from the README (`backend/.venv`, backend dependencies, and `frontend/npm ci`). Do not copy a `.env` containing credentials into a browser directory.
 

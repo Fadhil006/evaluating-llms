@@ -52,6 +52,7 @@ export default function Experiments({ mode }: { mode?: 'live' | 'demo' }) {
   const [modelB, setModelB] = useState('')
   const [providerFilter, setProviderFilter] = useState('all')
   const [modelSearch, setModelSearch] = useState('')
+  const [showUnavailable, setShowUnavailable] = useState(false)
   const [name, setName] = useState('Beginner comparison')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [maxTokens, setMaxTokens] = useState(512)
@@ -90,6 +91,12 @@ export default function Experiments({ mode }: { mode?: 'live' | 'demo' }) {
     Promise.all([api<Dataset[]>('/api/datasets'), api<Model[]>('/api/models'), api<Provider[]>('/api/providers'), api<Draft[]>('/api/experiments')])
       .then(async ([data, catalog, connectionRows, saved]) => {
         if (!active) return
+        if (catalog.length === 0 || (connectionRows.some(provider => provider.credential_configured) && !catalog.some(model => eligible(model, mode)))) {
+          setNotice('Loading provider catalogs. This checks model availability and pricing; it does not generate answers.')
+          await api('/api/models/refresh', { method: 'POST' })
+          ;[catalog, connectionRows] = await Promise.all([api<Model[]>('/api/models'), api<Provider[]>('/api/providers')])
+          if (active) setNotice(catalog.length ? 'Model catalog loaded. Choose questions, then select Model A and Model B.' : 'No model catalog is available. Check provider credentials in Settings, then refresh the catalog in step 2.')
+        }
         let rows = data
         let sample = rows.find(row => row.name === 'LLM Comparison Lab Original Demo')
         if (!sample) {
@@ -261,7 +268,7 @@ export default function Experiments({ mode }: { mode?: 'live' | 'demo' }) {
   const selectedRoute = (id: string) => models.find(model => String(model.id) === id)
   const routeSelector = (label: string, value: string, other: string, onChange: (value: string) => void) => {
     const selected = selectedRoute(value)
-    const options = [...visibleModels]
+    const options = visibleModels.filter(model => showUnavailable || eligible(model, mode))
     if (selected && !options.some(model => model.id === selected.id)) options.unshift(selected)
     return <label className="block min-w-0">{label}<select aria-label={label} disabled={busy} className="mt-1 block w-full rounded border p-2" value={value} onChange={event => onChange(event.target.value)}><option value="">Choose a model</option>{options.map(model => <option key={model.id} value={model.id} disabled={optionDisabled(model, other) || staleRouteIds.includes(String(model.id))}>{model.name} — {providerLabel(model.provider)}{staleRouteIds.includes(String(model.id)) ? ' · needs reselect' : eligible(model, mode) ? ' · ready at last check' : ` · unavailable: ${statusReason(model)}`}</option>)}</select></label>
   }
@@ -291,6 +298,8 @@ export default function Experiments({ mode }: { mode?: 'live' | 'demo' }) {
 
         {step === 2 && <div className="space-y-4"><h3 ref={stepHeading} tabIndex={-1} className="text-lg font-semibold">2. Choose two models</h3>
           <p>Both models receive the same questions and shared instruction. The same model through different providers is allowed: provider routing can affect results. Your selections stay unchanged when filters change.</p>
+          <p><strong>{visibleModels.filter(model => eligible(model, mode)).length} models ready to select</strong> under the current filter. Availability is not a guarantee that generation will succeed.</p>
+          <label className="block"><input type="checkbox" checked={showUnavailable} onChange={event => setShowUnavailable(event.target.checked)} /> Show unavailable models and pricing restrictions</label>
           {mode === 'live' && providers.filter(provider => providerFilter === 'all' || provider.slug === providerFilter).map(provider => !provider.credential_configured ? <p key={provider.slug}>{providerLabel(provider.slug)}: credential missing. <Link to="/settings" className="underline">Open Settings for setup instructions</Link>.</p> : provider.connection_status !== 'connected' && !models.some(model => model.provider === provider.slug) ? <p key={provider.slug}>{providerLabel(provider.slug)}: catalog unavailable or not loaded. Refresh the provider catalog below; if it fails, check your connection and provider status.</p> : null)}
           <div className="grid gap-3 sm:grid-cols-2"><label>Provider filter<select className="mt-1 block w-full rounded border p-2" value={providerFilter} onChange={event => setProviderFilter(event.target.value)}><option value="all">All providers</option>{providerNames.map(provider => { const status = providers.find(row => row.slug === provider); return <option key={provider} value={provider}>{providerLabel(provider)} — {status?.connection_status ?? 'status unknown'}{status && !status.credential_configured && provider !== 'fixture' ? ', credential missing' : ''}</option> })}</select></label><label>Search models<input className="mt-1 block w-full rounded border p-2" type="search" value={modelSearch} onChange={event => setModelSearch(event.target.value)} placeholder="Name, route ID or provider" /></label></div>
           <div className="grid gap-3 sm:grid-cols-2">{routeSelector('Model A', modelA, modelB, setModelA)}{routeSelector('Model B', modelB, modelA, setModelB)}</div>
