@@ -10,6 +10,8 @@ button, a, select, input { min-height: 2.5rem; }
 .results-sections { display: flex; flex-wrap: wrap; gap: .5rem; }
 .results-sections a { border: 1px solid #cbd5e1; border-radius: .375rem; padding: .5rem .75rem; color: #0f172a; }
 .results-sections a:hover { background: #f1f5f9; }
+.results-panel select { max-width: 100%; }
+.results-panel [aria-label="Question navigation"] { flex-wrap: wrap; }
 .empty-state { margin-top: 1rem; border-left: 4px solid #64748b; background: #f8fafc; padding: 1rem; }
 .answer-text { max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: .25rem; background: #f8fafc; padding: .75rem; }
 .route-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 1rem; margin-top: 1rem; }
