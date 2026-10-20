@@ -1,26 +1,28 @@
-"""Dated Zen free-price evidence checked against the official pricing/endpoint tables."""
+"""Short-lived free-price evidence checked against OpenCode's current official model page."""
 
 from datetime import UTC, date, datetime, time
 
-ZEN_PRICING_SOURCE = "https://opencode.ai/docs/zen/"
-ZEN_PRICING_CHECKED_ON = date(2026, 10, 8)
-ZEN_PRICING_EXPIRES_ON = date(2026, 10, 15)
+ZEN_PRICING_SOURCE = "https://opencode.ai/v2/docs/console/models/"
+ZEN_PRICING_CHECKED_ON = date(2026, 10, 20)
+ZEN_PRICING_EXPIRES_ON = date(2026, 10, 21)
 ZEN_PRICING_EXPIRES_AT = datetime.combine(ZEN_PRICING_EXPIRES_ON, time.min, UTC)
 
-# Each exact ID is named in the official pricing table with free input/output/cached-read
-# prices and in the endpoint table with chat-completions. Cached-write is explicitly “—”.
+# Each exact ID is listed as free and uses the documented OpenAI chat endpoint.
+# Jev is free but uses SystemOne, so it is deliberately excluded from chat pricing evidence.
 CHAT_FREE_IDS = frozenset({
     "big-pickle",
-    "space-bunny-free",
+    "glm-5.3-flash-free",
+    "deepseek-v4.1-flash-free",
+    "minimax-m3.1-flash-free",
+    "beam-free",
+    "ll-alpha-free",
     "longcat-2.5-preview-free",
     "exo-free",
-    "fledge-alpha-free",
     "mimo-v2.6-flash-free",
     "mimo-v2.5-free",
-    "ling-3.1-flash-free",
-    "ling-3.0-flash-fin-free",
     "nemotron-3-ultra-free",
     "nemotron-3.5-lightning-free",
+    "nemotron-3.5-super-vl-free",
 })
 
 

@@ -25,11 +25,13 @@ def get_row(session, experiment_id: int) -> Experiment:
 def estimate(request: Request, design: Design):
     try:
         with request.app.state.sessions() as session:
-            config, budget = prepare(session, design)
+            mode = getattr(request.app.state, "execution_mode", "live")
+            config, budget = prepare(session, design, mode=mode)
             return {"estimate": budget, "item_ids": config["item_ids"],
                     "category_counts": config["category_counts"], "dataset_content_sha256": config["dataset_content_sha256"],
                     "policy_decisions_advisory": config["policy_decisions_advisory"],
-                    "ready": all(d["allowed"] for d in config["policy_decisions_advisory"])}
+                    "ready": all(d["allowed"] and (d.get("credential_configured") or mode == "demo")
+                                 for d in config["policy_decisions_advisory"])}
     except DesignProblem as exc:
         raise invalid(exc) from None
 

@@ -116,7 +116,11 @@ def report_data(session: Session, experiment_id: int, redactions: list[str] | No
         "analysis": analysis,
         "human_review": summary(session, experiment_id),
         "limitations": ["Convenience sample; not representative of all tasks or users.",
-                        "Route latency is measured under this run's conditions, not intrinsic model speed.",
+                         "Automatic checks, human review, and any future AI judge are separate evidence.",
+                         "Exact-match and declared-rule checks are not general answer quality; overlap metrics are proxies.",
+                         "Quality uses eligible answers or declared checks; missing answers are not incorrect answers.",
+                         "No overall winner or composite quality score is established by this report.",
+                         "Route latency is measured under this run's conditions, not intrinsic model speed.",
                         "Human evaluator labels are local and unauthenticated; review is not accuracy.",
                         "Fixture provenance indicates synthetic responses, not live provider performance.",
                         "Unknown usage remains unknown; absent responses remain missing, not zero."]}
@@ -180,8 +184,8 @@ def render_html(data: dict) -> str:
     banner = ("<strong>DEMONSTRATION — synthetic responses, no live API calls</strong>" +
               "<br>" if data["demonstration_label"] else "")
     return ("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>" + title +
-            " report</title>" + banner + "<h1>" + title + "</h1><table><thead><tr><th>Slot</th><th>Item</th>"
-            "<th>Status</th><th>Response</th></tr></thead><tbody>" + rows +
+             " comparison report</title>" + banner + "<h1>" + title + "</h1><h2>Answers</h2><table><thead><tr><th>Model slot</th><th>Question</th>"
+             "<th>Status</th><th>Answer</th></tr></thead><tbody>" + rows +
             "</tbody></table><h2>Allowlisted report manifest</h2><pre>" + manifest + "</pre></html>")
 
 
@@ -190,13 +194,13 @@ def render_markdown(data: dict) -> str:
         text = str(value if value is not None else "")
         fence = "`" * max(3, max((len(m.group()) for m in re.finditer(r"`+", text)), default=0) + 1)
         return f"{fence}\n{text}\n{fence}"
-    lines = ["# Experiment report", ""]
+    lines = ["# Comparison report", ""]
     if data["demonstration_label"]:
         lines.extend([f"**{data['demonstration_label']}**", ""])
     lines.extend([f"Name: {code(data['experiment']['name'])}",
                   f"Status: `{data['experiment']['status']}`", "", "## Provenance", "",
                   code(json.dumps({"dataset": data["dataset"], "models": data["models"]},
-                                  ensure_ascii=False, indent=2)), "", "## Responses", ""])
+                                  ensure_ascii=False, indent=2)), "", "## Answers", ""])
     for job in data["jobs"]:
         lines.extend([f"### Slot {job['model_slot']} — item {code(job['item_id'])}", "",
                       f"Status: `{job['status']}`", "", code(job["prompt"]), "",
@@ -205,8 +209,10 @@ def render_markdown(data: dict) -> str:
         lines.extend(["## Frozen analysis snapshot", "",
                       code(json.dumps(data["analysis"], ensure_ascii=False, indent=2)), ""])
     lines.extend(["## Aggregates", "", code(json.dumps(data["aggregates"], ensure_ascii=False, indent=2)),
-                  "", "## Human review", "", code(json.dumps(data["human_review"], ensure_ascii=False, indent=2)),
-                  "", "## Limitations", "", *[f"- {line}" for line in data["limitations"]], ""])
+                   "", "## Human review", "", code(json.dumps(data["human_review"], ensure_ascii=False, indent=2)),
+                   "", "## Limitations", "", *[f"- {line}" for line in data["limitations"]], ""])
+    lines.extend(["## Technical details — frozen configuration and durable attempts", "",
+                  code(render_json(data)), ""])
     return "\n".join(lines)
 
 
@@ -217,7 +223,9 @@ def render_csv(data: dict) -> str:
                      "variant", "job_status", "prompt", "attempt_number", "attempt_outcome", "duration_ms", "error_code",
                      "response", "returned_identity", "finish_reason", "usage_json", "metric", "scorer_version",
                        "value", "parse_status", "human_feedback", "human_comments", "analysis_json",
-                       "split", "family_id", "variant_id", "review_status", "item_provenance_json"])
+                        "split", "family_id", "variant_id", "review_status", "item_provenance_json",
+                        "report_metadata_json", "attempts_json"])
+    metadata = json.dumps({key: value for key, value in data.items() if key != "jobs"}, ensure_ascii=False)
     routes = {m["slot"]: m for m in data["models"]}
     def safe(value):
         if isinstance(value, str) and re.match(r"^[\s\x00-\x1f]*[=+@-]", value):
@@ -246,8 +254,10 @@ def render_csv(data: dict) -> str:
                                    if feedback["comments"]),
                           json.dumps(data["analysis"], ensure_ascii=False) if data.get("analysis") else None,
                           job["split"], job["family_id"], job["variant_id"], job["review_status"],
-                          json.dumps(job["item_provenance"], ensure_ascii=False)]
+                           json.dumps(job["item_provenance"], ensure_ascii=False), metadata,
+                           json.dumps(job["attempts"], ensure_ascii=False)]
                 writer.writerow([safe(value) for value in row])
-    if not data["jobs"] and data.get("analysis"):
-        writer.writerow([None] * 25 + [safe(json.dumps(data["analysis"], ensure_ascii=False))] + [None] * 5)
+    if not data["jobs"]:
+        writer.writerow([None] * 25 + [safe(json.dumps(data.get("analysis"), ensure_ascii=False))]
+                        + [None] * 5 + [safe(metadata), "[]"])
     return stream.getvalue()

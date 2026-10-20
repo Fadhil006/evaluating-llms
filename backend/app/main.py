@@ -105,7 +105,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result = [{"slug": slug, "credential_configured": bool(key.get_secret_value()),
                      "connection_status": records[slug].connection_status if slug in records else "unchecked",
                      "checked_at": records[slug].checked_at if slug in records else None,
-                     "policy_links": {"pricing": "https://opencode.ai/docs/zen/" if slug == "opencode_zen" else "https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties"}}
+                      "policy_links": {"pricing": "https://opencode.ai/v2/docs/console/models/" if slug == "opencode_zen" else "https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties"},
+                      "readiness": ("missing_credentials" if not key.get_secret_value() else
+                                    "catalog_unavailable" if slug not in records or records[slug].connection_status != "reachable" else
+                                    "catalog_ready")}
                      for slug, key in (("openrouter", settings.openrouter_api_key), ("opencode_zen", settings.opencode_zen_api_key))]
             if settings.execution_mode == "demo":
                 result.append({"slug": "fixture", "credential_configured": False,

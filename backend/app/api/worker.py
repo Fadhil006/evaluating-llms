@@ -18,11 +18,20 @@ def progress(request: Request, experiment_id: int):
             raise HTTPException(404, "Experiment not found")
         counts = Counter(session.scalars(select(GenerationJob.status).where(
             GenerationJob.experiment_id == experiment_id)))
+        item_jobs = {}
+        for item_id, status in session.execute(select(GenerationJob.dataset_item_id, GenerationJob.status).where(
+                GenerationJob.experiment_id == experiment_id)):
+            item_jobs.setdefault(item_id, []).append(status)
+        questions_total = len(exp.config.get("item_ids", []))
+        expected_jobs = len(exp.config.get("models", [])) * exp.config.get("repetitions", 1)
+        questions_completed = sum(len(statuses) == expected_jobs and all(
+            status == "succeeded" for status in statuses) for statuses in item_jobs.values())
         used = session.scalar(select(func.count(RequestAttempt.id)).join(GenerationJob).where(
             GenerationJob.experiment_id == experiment_id, RequestAttempt.outcome != "unsent"))
         accounts = session.scalars(select(ProviderAccountState)).all()
         return {"status": exp.status, "pause_reason": exp.pause_reason,
                 "completed": counts["succeeded"], "failed": counts["failed"],
+                "questions_completed": questions_completed, "questions_total": questions_total,
                 "pending": counts["pending"] + counts["retry-wait"] + counts["interrupted"],
                 "in_flight": counts["leased"], "cancelled": counts["cancelled"],
                 "attempts_consumed": used, "attempts_remaining": max(0, exp.config.get("attempt_cap", 0) - used),

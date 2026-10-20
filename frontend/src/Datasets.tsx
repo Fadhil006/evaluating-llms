@@ -21,7 +21,7 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export default function Datasets() {
+export default function Datasets({ onImported }: { onImported?: (datasets: Dataset[], datasetId: number, version: string) => void }) {
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -81,8 +81,10 @@ export default function Datasets() {
     const params = new URLSearchParams({ name, version, description, source: source || 'unknown', license: license || 'unknown', acknowledge_duplicates: String(acknowledge) })
     if (datasetId) params.set('dataset_id', datasetId)
     try {
-      await api(`/api/datasets/import?${params}`, { method: 'POST', headers: { 'Content-Type': contentType(file) }, body: file })
-      setDatasets(await api<Dataset[]>('/api/datasets'))
+      const imported = await api<{ dataset_id: number; version: string }>(`/api/datasets/import?${params}`, { method: 'POST', headers: { 'Content-Type': contentType(file) }, body: file })
+      const rows = await api<Dataset[]>('/api/datasets')
+      setDatasets(rows)
+      onImported?.(rows, imported.dataset_id, imported.version)
       setNotice('Dataset version saved.'); setPreview(null); setPreviewFile(null); setFile(null); setAcknowledge(false)
     } catch (cause) { setError((cause as Error).message) }
     finally { setBusy(false) }

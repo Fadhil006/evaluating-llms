@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy.orm import Session
 from test_foundation import migrate
 
@@ -151,6 +152,9 @@ def test_zen_endpoint_support_and_no_dispatch(monkeypatch):
         assert adapter.quota() is None
         with pytest.raises(ProviderError, match="unsupported_endpoint"):
             adapter.generate(GenerationRequest("gpt-6-sol", (("user", "hi"),)), entries[3], NOW)
+        with pytest.raises(ProviderError, match="unsupported_endpoint"):
+            adapter.generate(GenerationRequest("jev-1.13-free", (("user", "hi"),)), entries[2], NOW)
+        assert not zen_evidence("jev-1.13-free")
 
 
 def test_zen_allowlisted_free_model_requires_server_key(monkeypatch):
@@ -190,6 +194,26 @@ def test_zen_public_catalog_exposes_only_dated_free_entries_without_key(tmp_path
         assert free["eligibility"]["allowed"] is True
         assert unsupported["eligibility"]["reason"] == "unsupported_endpoint"
         assert api.get("/api/providers").json()[0]["credential_configured"] is False
+
+
+def test_opencode_key_precedence_and_legacy_alias(monkeypatch):
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "preferred")
+    monkeypatch.setenv("OPENCODE_API_KEY", "legacy")
+    assert Settings(_env_file=None).opencode_zen_api_key.get_secret_value() == "preferred"
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "")
+    assert Settings(_env_file=None).opencode_zen_api_key.get_secret_value() == ""
+    monkeypatch.delenv("OPENCODE_ZEN_API_KEY")
+    assert Settings(_env_file=None).opencode_zen_api_key.get_secret_value() == "legacy"
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
+    assert Settings(_env_file=None).opencode_zen_api_key.get_secret_value() == ""
+    configured = Settings(_env_file=None, opencode_zen_api_key=SecretStr("constructor"))
+    assert configured.opencode_zen_api_key.get_secret_value() == "constructor"
+
+
+def test_zen_chat_allowlist_matches_documented_endpoint_intersection():
+    assert zen_evidence("jev-1.13-free") == {}
+    assert not decide("opencode_zen", CatalogEntry("jev-1.13-free", "Jev", "unsupported", None, (), {}),
+                      ZEN_NOW, ZEN_NOW).allowed
 
 
 def _freeze_zen_time(monkeypatch, *modules):

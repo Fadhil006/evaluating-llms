@@ -189,6 +189,9 @@ def test_start_freezes_latest_evidence_jobs_and_lifecycle(tmp_path):
         assert session.scalar(select(ExperimentModel.model_snapshot_id).where(
             ExperimentModel.experiment_id == draft["id"], ExperimentModel.slot == 1)) == frozen["config"]["model_snapshot_ids"][1]
     assert client.post(url + "/start").status_code == 409
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(GenerationJob).where(
+            GenerationJob.experiment_id == draft["id"])) == 8
     assert client.put(url, json=payload).status_code == 409
     assert client.post(url + "/resume").status_code == 409
     assert client.post(url + "/pause").json()["status"] == "paused"

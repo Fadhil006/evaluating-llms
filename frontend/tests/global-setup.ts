@@ -10,10 +10,12 @@ export default async function globalSetup(_config: FullConfig) {
   const env = {
     ...process.env,
     EXECUTION_MODE: 'demo',
+    MANUAL_DAILY_ATTEMPT_CAP: '10000', // Isolated synthetic fixtures, not a live quota override.
     DATABASE_PATH: `/tmp/opencode/lclab-e2e-live-${process.pid}.sqlite3`,
     DEMO_DATABASE_PATH: `/tmp/opencode/lclab-e2e-demo-${process.pid}.sqlite3`,
     OPENROUTER_API_KEY: '',
     OPENCODE_ZEN_API_KEY: '',
+    OPENCODE_API_KEY: '',
   }
   const migration = spawnSync(python, ['-m', 'alembic', 'upgrade', 'head'], { cwd: backend, env, encoding: 'utf8' })
   if (migration.status !== 0) throw new Error(`E2E database migration failed:\n${migration.stderr}`)

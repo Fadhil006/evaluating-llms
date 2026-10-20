@@ -1,0 +1,159 @@
+import { expect, test } from '@playwright/test'
+
+test('provider filters preserve routes, permit cross-provider identity and explain blocked choices', async ({ page }) => {
+  // Explicit UI mocks: these routes never dispatch or claim real provider access.
+  await page.route('**/api/settings', async route => {
+    const response = await route.fetch()
+    await route.fulfill({ json: { ...await response.json(), execution_mode: 'live' } })
+  })
+  const model = (id: number, provider: string, model_id: string, reason = 'verified_free', credential = true) => ({
+    id, provider, model_id, name: `Example ${model_id}`, endpoint: 'chat/completions', availability: 'available',
+    credential_configured: credential, supported_parameters: ['max_tokens', 'temperature'], pricing_source: 'https://example.invalid/prices',
+    eligibility: { allowed: reason === 'verified_free', reason, checked_at: new Date().toISOString(), model_id },
+  })
+  const models = [model(100, 'openrouter', 'same'), model(101, 'openrouter', 'second'), model(102, 'opencode_zen', 'same'),
+    model(103, 'opencode_zen', 'second'), model(104, 'openrouter', 'expired', 'stale_pricing'),
+    model(105, 'opencode_zen', 'missing-key', 'verified_free', false), model(106, 'opencode_zen', 'unsupported', 'unsupported_endpoint')]
+  await page.route('**/api/models', route => route.fulfill({ json: models }))
+  await page.route('**/api/experiments', route => route.fulfill({ json: [] }))
+  await page.goto('/experiments')
+  await page.getByRole('button', { name: 'Continue to models' }).click()
+  const a = page.getByRole('combobox', { name: 'Model A', exact: true })
+  const b = page.getByRole('combobox', { name: 'Model B', exact: true })
+  await page.getByLabel('Provider filter').selectOption('openrouter')
+  await expect(a.locator('option[value="102"]')).toHaveCount(0)
+  await a.selectOption('100')
+  await expect(b.locator('option[value="100"]')).toHaveJSProperty('disabled', true)
+  await b.selectOption('101') // Same-provider comparison supported.
+  await expect(page.getByRole('button', { name: 'Continue to review' })).toBeEnabled()
+  await page.getByLabel('Provider filter').selectOption('opencode_zen')
+  await expect(a).toHaveValue('100') // Filter never silently replaces selection.
+  await b.selectOption('102') // Same model ID, different provider is not a duplicate route.
+  await expect(page.getByRole('button', { name: 'Continue to review' })).toBeEnabled()
+  await a.selectOption('103') // Two Zen routes also supported.
+  await expect(b.locator('option[value="103"]')).toHaveJSProperty('disabled', true)
+  await page.getByLabel('Search models').fill('missing-key')
+  await expect(a).toHaveValue('103')
+  await expect(a.locator('option[value="105"]')).toHaveJSProperty('disabled', true)
+  await page.getByLabel('Search models').clear()
+  await page.getByLabel('Provider filter').selectOption('all')
+  await expect(a.locator('option[value="104"]')).toHaveJSProperty('disabled', true)
+  await expect(a.locator('option[value="106"]')).toHaveJSProperty('disabled', true)
+  await page.getByText('Why are some routes unavailable?', { exact: true }).click()
+  await expect(page.getByText(/stale_pricing/).last()).toBeVisible()
+  await expect(page.getByText(/Provider credential is not configured/).last()).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await a.focus()
+  await page.keyboard.press('Tab')
+  await expect(b).toBeFocused()
+  for (const row of models) row.id += 1000
+  await page.getByRole('button', { name: 'Refresh provider catalog' }).click()
+  await expect(page.getByText(/Catalog refresh complete/)).toBeVisible()
+  await expect(a).toHaveValue('103')
+  await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled()
+  await a.selectOption('1103')
+  await b.selectOption('1102')
+  await expect(page.getByRole('button', { name: 'Continue to review' })).toBeEnabled()
+})
+
+test('validated import stays in the wizard, estimates retain advanced settings and start only once', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/experiments')
+  await page.getByLabel('Use my own questions').check()
+  const upload = page.getByLabel(/CSV or JSONL file/)
+  await upload.setInputFiles({ name: 'invalid.jsonl', mimeType: 'application/x-ndjson', buffer: Buffer.from('{broken') })
+  await page.getByRole('button', { name: 'Preview file' }).click()
+  await expect(page.getByRole('alert')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save dataset version' })).toBeDisabled()
+  const question = { id: 'own-one', task_type: 'short_factual', prompt: 'What color is a clear daytime sky?', reference_answers: ['blue'],
+    scoring_config: { metric: 'normalized_exact_match', normalization: 'unicode_nfc_casefold_trim_collapse_whitespace' } }
+  await upload.setInputFiles({ name: 'own.jsonl', mimeType: 'application/x-ndjson', buffer: Buffer.from(JSON.stringify(question)) })
+  await page.getByRole('button', { name: 'Preview file' }).click()
+  await expect(page.getByText(/1 rows · SHA-256/)).toBeVisible()
+  await page.getByLabel('Dataset name', { exact: true }).fill('Browser imported questions')
+  await page.getByRole('button', { name: 'Save dataset version' }).click()
+  await expect(page.getByText('Imported questions selected in this comparison.')).toBeVisible()
+  await expect(page.getByText(/1 questions in this version; this comparison will use 1/)).toBeVisible()
+  await page.getByRole('button', { name: 'Continue to models' }).click()
+  await page.getByRole('button', { name: 'Refresh provider catalog' }).click()
+  await page.getByLabel('Model A', { exact: true }).selectOption({ index: 1 })
+  await page.getByLabel('Model B', { exact: true }).selectOption({ index: 2 })
+  await page.getByRole('button', { name: 'Continue to review' }).click()
+  await page.getByText('Advanced settings', { exact: true }).click()
+  await page.getByLabel('Shared system instruction').fill('Answer briefly.')
+  await page.getByLabel('Repetitions', { exact: true }).fill('2')
+  await page.getByLabel('Retries per job (0 = none)').fill('1')
+  await page.getByLabel('Absolute generation attempt cap').fill('3')
+  await expect(page.getByRole('alert')).toContainText(/cap/i)
+  await expect(page.getByRole('button', { name: 'Start comparison', exact: true })).toBeDisabled()
+  await page.getByLabel('Absolute generation attempt cap').fill('8')
+  await expect(page.getByText(/initial generation requests: 4/)).toBeVisible()
+  await expect(page.getByText(/maximum candidate retries: 4/)).toBeVisible()
+  await page.getByRole('button', { name: 'Back to models' }).click()
+  await page.getByRole('button', { name: 'Continue to review' }).click()
+  await page.getByText('Advanced settings', { exact: true }).click()
+  await expect(page.getByLabel('Shared system instruction')).toHaveValue('Answer briefly.')
+  let creates = 0
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/experiments') creates++ })
+  await page.getByRole('button', { name: 'Start comparison', exact: true }).dblclick()
+  await expect(page.getByRole('button', { name: 'New comparison', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start comparison', exact: true })).toHaveCount(0)
+  expect(creates).toBe(1)
+  expect(errors).toEqual([])
+})
+
+test('paused unknown outcomes require acknowledgement and failed filters keep both answer sides', async ({ page }) => {
+  await page.request.post('/api/models/refresh')
+  await page.request.post('/api/datasets/built-in')
+  const models = await (await page.request.get('/api/models')).json()
+  const datasets = await (await page.request.get('/api/datasets')).json()
+  const sample = datasets.find((row: { name: string }) => row.name === 'LLM Comparison Lab Original Demo')
+  const created = await (await page.request.post('/api/experiments', { data: { name: 'Partial synthetic evidence',
+    dataset_version_id: sample.versions[0].id, model_snapshot_ids: models.map((row: { id: number }) => row.id), retries_per_job: 0 } })).json()
+  await page.request.post(`/api/experiments/${created.id}/start`)
+  await expect.poll(async () => (await (await page.request.get(`/api/experiments/${created.id}/progress`)).json()).status).toBe('completed')
+  const saved = await (await page.request.get(`/api/experiments/${created.id}`)).json()
+  const report = await (await page.request.get(`/api/experiments/${created.id}/results`)).json()
+  const answers = await (await page.request.get(`/api/experiments/${created.id}/responses?limit=100`)).json()
+  const failed = answers.items[0]
+  failed.status = 'failed'; failed.job_status = 'failed'; failed.response = null; failed.attempt_error = 'unknown_remote_outcome'
+  const counterpart = answers.items.find((row: { item_id: string; model_slot: number }) => row.item_id === failed.item_id && row.model_slot !== failed.model_slot)
+  // The paused/failed state below is a browser fixture, not a real provider outcome.
+  await page.route('**/api/experiments', route => route.fulfill({ json: [{ ...saved, status: 'paused', pause_reason: 'rate_limit' }] }))
+  await page.route(`**/api/experiments/${created.id}/progress`, route => route.fulfill({ json: { status: 'paused', pause_reason: 'rate_limit',
+    completed: 19, failed: 1, pending: 0, in_flight: 0, cancelled: 0, attempts_consumed: 20, attempts_remaining: 20, questions_completed: 9, questions_total: 10 } }))
+  await page.route(`**/api/experiments/${created.id}/results`, route => route.fulfill({ json: report }))
+  await page.route(`**/api/experiments/${created.id}/responses?**`, route => route.fulfill({ json: answers }))
+  let resumes = 0
+  await page.route(`**/api/experiments/${created.id}/resume?**`, async route => {
+    expect(new URL(route.request().url()).searchParams.get('acknowledge_uncertain')).toBe('true')
+    resumes++
+    await route.fulfill({ json: { ...saved, status: 'paused', pause_reason: 'rate_limit' } })
+  })
+  await page.goto('/experiments')
+  await page.getByRole('button', { name: /Partial synthetic evidence.*Expand/ }).click()
+  await expect(page.getByText(/Completed answers have been saved/)).toBeVisible()
+  page.once('dialog', dialog => dialog.dismiss())
+  await page.getByRole('button', { name: 'Resume', exact: true }).click()
+  expect(resumes).toBe(0)
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: 'Resume', exact: true }).click()
+  await expect.poll(() => resumes).toBe(1)
+  await page.getByLabel('Answer status').selectOption('failed')
+  await expect(page.getByText('The request failed; no answer was recorded.')).toBeVisible()
+  await expect(page.locator('.answer-text')).toHaveText(counterpart.response.raw_text)
+  await expect(page.getByText(/1 of 2 models have an answer/)).toBeVisible()
+  await page.getByLabel('Hide model names').check()
+  await expect(page.locator('.results-panel').getByText(/fixture\//)).toHaveCount(0)
+  // All-failed fixture: the UI must offer recovery, not manufacture quality scores.
+  for (const row of report.summaries) Object.assign(row, { responses: 0, failures: row.scheduled_jobs, pending: 0,
+    quality: null, quality_denominator: 0, metric_eligible: 0, latency_sample_count: 0, median_request_latency_ms: null })
+  for (const row of answers.items) Object.assign(row, { status: 'failed', response: null, job_status: 'failed' })
+  await page.reload()
+  await page.getByRole('button', { name: /Partial synthetic evidence.*Expand/ }).click()
+  await expect(page.locator('.route-card').getByText(/No successful answers yet/)).toHaveCount(2)
+  await expect(page.locator('.answer-text')).toHaveCount(0)
+  await expect(page.getByText(/0 of 2 models have an answer/)).toBeVisible()
+})

@@ -62,8 +62,8 @@ def decide(slug: str, entry: CatalogEntry, checked_at: datetime | None, now: dat
         if "max_tokens" not in entry.supported_parameters:
             return blocked("unsupported_parameter")
     if slug == "opencode_zen":
-        # Zen doesn't publish prices from /models; this exact-ID official doc allowlist
-        # expires after seven days and is rechecked on every start/resume/dispatch.
+        # OpenCode doesn't publish prices in the catalog response; this exact-ID
+        # official-doc allowlist expires daily and is rechecked before dispatch.
         if (entry.endpoint != "chat/completions" or not zen_evidence(entry.model_id)
                 or entry.pricing_source != ZEN_PRICING_SOURCE
                 or entry.pricing != zen_evidence(entry.model_id)):

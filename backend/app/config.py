@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryFile
 from typing import Literal
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import AliasChoices, Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     free_only: Literal[True] = True
     request_timeout_seconds: int = Field(default=60, ge=1, le=300)
     openrouter_api_key: SecretStr = SecretStr("")
-    opencode_zen_api_key: SecretStr = SecretStr("")
+    opencode_zen_api_key: SecretStr = Field(default=SecretStr(""), validation_alias=AliasChoices(
+        "OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY"))
 
     @field_validator("free_only", mode="before")
     @classmethod

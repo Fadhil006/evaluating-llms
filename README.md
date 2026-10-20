@@ -1,5 +1,7 @@
 # LLM Comparison Lab
 
+**New here?** Start with the [beginner comparison walkthrough and isolated demo launcher](docs/BEGINNER_COMPARISON.md). See [provider setup and current Zen compatibility](docs/PROVIDER_CONFIGURATION.md) for credential precedence and dated pricing restrictions. The [optional AI-judge recommendation](docs/AI_JUDGE_DESIGN.md) is a design, not an implemented feature.
+
 Local single-user workspace for designing, running, and inspecting small LLM comparisons. It provides OpenRouter discovery, strict free-only checks, versioned dataset import, a durable experiment queue/worker, task-specific scores, results, and blinded human review. This is an implementation inspired by Chang et al.'s LLM evaluation survey; it does not reproduce the paper or every benchmark it discusses.
 
 ## Prerequisites

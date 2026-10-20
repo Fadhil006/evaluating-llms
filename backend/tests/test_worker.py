@@ -80,6 +80,9 @@ def test_results_scoring_progress_and_terminal(tmp_path):
     _, api, engine, exp_id = trial(tmp_path)
     adapter = Adapter()
     worker = Worker(sessionmaker(engine), {"openrouter": adapter}, spacing_seconds=0)
+    assert worker.step()
+    progress = api.get(f"/api/experiments/{exp_id}/progress").json()
+    assert (progress["questions_completed"], progress["questions_total"]) == (0, 2)
     while worker.step():
         pass
     with sessionmaker(engine)() as session:
@@ -90,6 +93,7 @@ def test_results_scoring_progress_and_terminal(tmp_path):
         assert all(a.eligibility_evidence["snapshot_id"] for a in session.scalars(select(RequestAttempt)))
     progress = api.get(f"/api/experiments/{exp_id}/progress").json()
     assert (progress["completed"], progress["attempts_consumed"], progress["attempts_remaining"]) == (4, 4, 4)
+    assert (progress["questions_completed"], progress["questions_total"]) == (2, 2)
     metrics = api.get(f"/api/experiments/{exp_id}/results").json()["summaries"]
     assert metrics and all(row["latency_sample_count"] == 2 for row in metrics)
     assert all(row["usage_sample_count"] == 2 and row["completion_tokens_total"] is None for row in metrics)
@@ -318,8 +322,8 @@ def test_zen_allowlisted_free_route_dispatches_with_configured_key(tmp_path, mon
 
     with sessionmaker(engine).begin() as session:
         provider = session.scalar(select(Provider).where(Provider.slug == "openrouter"))
-        provider.slug, provider.base_url, provider.credential_configured = "opencode_zen", "https://opencode.ai/zen/v1", True
-        for snapshot_id, model_id in zip(ids[:2], ("big-pickle", "space-bunny-free")):
+        provider.slug, provider.base_url, provider.credential_configured = "opencode_zen", "https://opencode.ai/inference/v1", True
+        for snapshot_id, model_id in zip(ids[:2], ("big-pickle", "beam-free")):
             snapshot = session.get(ModelSnapshot, snapshot_id)
             snapshot.model_id, snapshot.display_name = model_id, model_id
             snapshot.endpoint_family, snapshot.supported_parameters = "chat/completions", ["max_tokens"]
@@ -352,8 +356,8 @@ def test_zen_free_price_without_provider_key_cannot_start(tmp_path):
     client, engine, payload, ids = setup(tmp_path)
     with sessionmaker(engine).begin() as session:
         provider = session.scalar(select(Provider).where(Provider.slug == "openrouter"))
-        provider.slug, provider.base_url, provider.credential_configured = "opencode_zen", "https://opencode.ai/zen/v1", False
-        for snapshot_id, model_id in zip(ids[:2], ("big-pickle", "space-bunny-free")):
+        provider.slug, provider.base_url, provider.credential_configured = "opencode_zen", "https://opencode.ai/inference/v1", False
+        for snapshot_id, model_id in zip(ids[:2], ("big-pickle", "beam-free")):
             snapshot = session.get(ModelSnapshot, snapshot_id)
             snapshot.model_id, snapshot.display_name = model_id, model_id
             snapshot.endpoint_family, snapshot.supported_parameters = "chat/completions", ["max_tokens"]

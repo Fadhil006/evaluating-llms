@@ -43,6 +43,15 @@ def serialize_model(row: ModelSnapshot, slug: str, now: datetime, credential_con
                          is_free=row.capabilities.get("is_free") is True, pricing_source=row.pricing_source,
                          pricing_expires_at=row.pricing_expires_at)
     decision = decide(slug, entry, row.pricing_checked_at.replace(tzinfo=UTC) if row.pricing_checked_at else None, now)
+    readiness = ("missing_credentials" if not credential_configured else
+                 "ready" if decision.allowed else
+                 "unsupported" if decision.reason == "unsupported_endpoint" else
+                 "temporarily_unavailable" if decision.reason == "unavailable" else
+                 "expired_prices" if decision.reason == "stale_pricing" else
+                 "unknown_or_paid_prices" if decision.reason in {
+                     "unknown_pricing", "nonzero_or_invalid_pricing", "conditional_pricing",
+                     "official_price_evidence_required"} else
+                 "unsupported" if decision.reason == "unsupported_parameter" else decision.reason)
     return {"id": row.id, "provider": slug, "model_id": row.model_id, "name": row.display_name,
              "endpoint": row.endpoint_family, "context_length": entry.context_length,
              "supported_parameters": list(entry.supported_parameters), "availability": row.availability,
@@ -50,4 +59,4 @@ def serialize_model(row: ModelSnapshot, slug: str, now: datetime, credential_con
              "credential_configured": credential_configured,
              "pricing_source": row.pricing_source, "pricing_evidence": row.pricing_evidence,
              "checked_at": decision.evidence()["checked_at"],
-             "eligibility": decision.evidence()}
+              "eligibility": decision.evidence(), "readiness": readiness}

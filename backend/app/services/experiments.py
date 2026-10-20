@@ -51,7 +51,7 @@ class DesignProblem(Exception):
         self.message = message
 
 
-def prepare(session: Session, design: Design) -> tuple[dict, dict]:
+def prepare(session: Session, design: Design, *, mode: str = "live") -> tuple[dict, dict]:
     version = session.get(DatasetVersion, design.dataset_version_id)
     if version is None:
         raise DesignProblem("dataset_version_id", "Dataset version not found")
@@ -104,6 +104,10 @@ def prepare(session: Session, design: Design) -> tuple[dict, dict]:
     decisions = [serialize_model(row, slug, now, credential_configured)["eligibility"]
                  | {"snapshot_id": row.id, "provider": slug, "credential_configured": credential_configured}
                  for row, slug, credential_configured in ordered]
+    if mode == "demo":
+        for decision in decisions:
+            decision.update(allowed=decision["provider"] == "fixture",
+                            reason="synthetic_fixture" if decision["provider"] == "fixture" else "demo_fixture_required")
     config = design.model_dump(exclude={"item_ids", "model_snapshot_ids"}) | {
         "schema_version": "1", "model_snapshot_ids": design.model_snapshot_ids,
         "models": identities, "item_ids": selected,
@@ -131,7 +135,7 @@ def describe(session: Session, row: Experiment) -> dict:
 
 
 def save_design(session: Session, design: Design, *, row: Experiment | None = None, mode: str = "live") -> dict:
-    config, _ = prepare(session, design)
+    config, _ = prepare(session, design, mode=row.provenance_mode if row else mode)
     if row is None:
         row = Experiment(status="draft", provenance_mode=mode)
         session.add(row)

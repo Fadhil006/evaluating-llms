@@ -29,7 +29,8 @@ CHAT_IDS = CHAT_FREE_IDS | frozenset({
 
 class Zen:
     slug = "opencode_zen"
-    base_url = "https://opencode.ai/zen/v1"
+    base_url = "https://opencode.ai/inference/v1"
+    chat_url = "https://opencode.ai/inference/openai/v1/chat/completions"
 
     def __init__(self, key: str, client: httpx.Client):
         self.client = client
@@ -66,5 +67,5 @@ class Zen:
             body["temperature"] = request.temperature
         if request.seed is not None:
             body["seed"] = request.seed
-        return normalize_response(get_json(self.client, "POST", f"{self.base_url}/chat/completions",
-                                           headers=self.headers, json=body, timeout=request.timeout_seconds))
+        return normalize_response(get_json(self.client, "POST", self.chat_url,
+                                            headers=self.headers, json=body, timeout=request.timeout_seconds))
