@@ -1,5 +1,18 @@
 # Guided comparison verification — 2026-10-20
 
+## Pricing recheck — 2026-10-21
+
+The prior Zen evidence expired as intended. At 05:02 UTC on 2026-10-21,
+[OpenCode's official model and pricing table](https://opencode.ai/v2/docs/console/models/)
+returned HTTP 200 and still explicitly listed **all 13 exact allowlisted
+OpenAI-chat route IDs** with Free input, output and cached-read prices;
+`jev-1.13-free` still used the separate SystemOne endpoint and remained
+excluded. The limited-time offer has no promised duration. We updated only
+the bounded evidence window to expire at **2026-10-22 00:00 UTC**. Zen models
+absent from the current catalog or requiring unsupported endpoints stay blocked.
+OpenRouter's catalog refresh produced 19 currently eligible routes; none of
+these metadata checks authenticated generation or started an experiment.
+
 ## Live-mode follow-up
 
 The user requested real mode rather than the synthetic demonstration. Port 18202

@@ -32,9 +32,9 @@ only model IDs present in its chat endpoint map; unrecognized model routes fail
 closed. It does not infer eligibility from model names.
 
 The official model page calls free models limited-time and publishes no specific
-expiry date. Its free-price table and endpoint table were rechecked on 2026-10-20.
+expiry date. Its free-price table and endpoint table were rechecked on 2026-10-21.
 The endpoint and price tables were both fetched from the official page on
-2026-10-20 (HTTP 200, uncached official Markdown). All 13 allowlisted IDs still
+2026-10-21 (HTTP 200, uncached official Markdown). All 13 allowlisted IDs still
 had explicit Free input, output and cached-read prices, with cached-write “—”.
 Thirteen of the fourteen listed free models use the OpenAI-compatible
 chat endpoint; `jev-1.13-free` uses `/inference/systemone/v1/systemone` and is
@@ -42,7 +42,7 @@ excluded from chat eligibility. The public catalog was also observed returning
 HTTP 200 with `application/json` and a top-level `data` list (model metadata,
 including `id`, `object`, `created`, and `owned_by`). This validates public
 catalog discovery only; authenticated generation has not been tested. The exact
-free/chat intersection evidence expires on 2026-10-21 at 00:00 UTC pending fresh
+free/chat intersection evidence expires on 2026-10-22 at 00:00 UTC pending fresh
 review. This is a local evidence-expiry policy, not a provider guarantee. A
 free model without current evidence is not dispatchable. OpenCode does not
 document a free-request quota counter; its quota remains unknown rather than
