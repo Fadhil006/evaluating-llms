@@ -1,0 +1,1 @@
+LLM Comparison Lab gives two selected provider routes the same questions, shows the request budget before starting, and lets you compare paired answers with failures visible. This walkthrough uses illustrative fixture results; it does not claim a live model winner.

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1920, height=1080" />
+  <script src="assets/gsap.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #f8fafc; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #0f172a; }
+    #root { position: relative; width: 1920px; height: 1080px; background: #f8fafc; }
+    .clip { position: absolute; inset: 0; overflow: hidden; }
+    .scene { background: #f8fafc; }
+    .scene::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 12px; background: #d99b27; }
+    .masthead { position: absolute; left: 92px; top: 54px; font-size: 24px; font-weight: 760; letter-spacing: -.03em; }
+    .masthead span { color: #a56f12; margin-right: 13px; }
+    .chapter { position: absolute; left: 92px; top: 175px; width: 480px; z-index: 2; }
+    .eyebrow { color: #a56f12; font-size: 20px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 82px; line-height: 1.06; letter-spacing: -.065em; font-weight: 760; }
+    h2 { font-size: 67px; line-height: 1.07; letter-spacing: -.06em; font-weight: 750; margin-top: 24px; }
+    .chapter p { color: #475569; font-size: 28px; line-height: 1.42; margin-top: 32px; max-width: 455px; }
+    .rule { width: 86px; height: 5px; background: #d99b27; margin: 24px 0 0; border-radius: 8px; }
+    .browser { position: absolute; left: 650px; top: 134px; width: 1178px; height: 827px; border: 1px solid #cbd5e1; border-radius: 20px; background: white; box-shadow: 0 30px 85px rgba(15,23,42,.13); overflow: hidden; }
+    .browser-bar { position: absolute; z-index: 3; top: 0; left: 0; width: 100%; height: 48px; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; display: flex; align-items: center; gap: 9px; padding-left: 23px; }
+    .browser-bar i { display: block; width: 10px; height: 10px; border-radius: 50%; background: #cbd5e1; }
+    .browser-bar strong { margin-left: 20px; color: #475569; font-size: 16px; font-weight: 600; }
+    .viewport { position: absolute; inset: 48px 0 0; overflow: hidden; }
+    .viewport img { position: absolute; display: block; width: 1820px; height: auto; max-width: none; left: -561px; }
+    .questions img { width: 1570px; left: -478px; top: -535px; }
+    .models img { top: -511px; }
+    .review img { top: -537px; }
+    .marker { position: absolute; z-index: 2; pointer-events: none; border: 3px solid #d79c37; border-radius: 13px; box-shadow: 0 0 0 7px rgba(254,243,199,.63); }
+    .questions .marker { left: 40px; top: 591px; width: 790px; height: 185px; }
+    .models .marker.a { left: 45px; top: 540px; width: 920px; height: 104px; }
+    .models .marker.b { left: 45px; top: 665px; width: 920px; height: 104px; }
+    .review .marker { left: 44px; top: 482px; width: 922px; height: 290px; }
+    .foot { position: absolute; left: 92px; bottom: 70px; color: #64748b; font-size: 21px; letter-spacing: .01em; }
+    .step-line { position: absolute; right: 95px; bottom: 68px; display: flex; gap: 12px; }
+    .step-line b { display: block; width: 46px; height: 6px; border-radius: 8px; background: #cbd5e1; }
+    .step-line b.on { background: #bd801b; }
+    .tag { display: inline-block; background: #fef3c7; color: #713f12; font-size: 21px; font-weight: 700; border-radius: 8px; padding: 13px 17px; margin-top: 42px; }
+    .hero { position: absolute; left: 92px; top: 282px; width: 995px; z-index: 5; }
+    .hero h1 { max-width: 940px; }
+    .hero p { color: #475569; font-size: 30px; margin-top: 29px; }
+    .hook-image { position: absolute; left: 630px; top: 130px; width: 1175px; height: 838px; overflow: hidden; border: 1px solid #cbd5e1; border-radius: 20px; box-shadow: 0 30px 85px rgba(15,23,42,.14); background: #fff; }
+    .hook-image img { width: 1530px; position: absolute; left: -470px; top: -205px; }
+    .hook-wash { position: absolute; inset: 0; background: linear-gradient(90deg, #f8fafc 0%, #f8fafc 27%, rgba(248,250,252,.96) 40%, rgba(248,250,252,.5) 67%, rgba(248,250,252,.04) 100%); }
+    .hero-line { width: 98px; height: 6px; border-radius: 5px; background: #bd801b; margin-bottom: 38px; }
+    .s4-callout { position: absolute; left: 92px; top: 555px; font-size: 37px; font-weight: 760; line-height: 1.22; letter-spacing: -.04em; }
+    .s4-callout small { display: block; font-size: 24px; font-weight: 500; color: #475569; margin-top: 17px; letter-spacing: 0; }
+    .s5-head { position: absolute; top: 139px; left: 93px; right: 93px; display: flex; align-items: end; justify-content: space-between; }
+    .s5-head h2 { margin-top: 10px; font-size: 58px; }
+    .fixture-badge { position: absolute; z-index: 8; top: 47px; right: 91px; padding: 14px 21px; border: 2px solid #d79c37; border-radius: 12px; background: #fef3c7; color: #713f12; font-size: 23px; font-weight: 850; letter-spacing: .025em; }
+    .results-grid { position: absolute; left: 91px; right: 91px; top: 284px; bottom: 155px; display: grid; grid-template-columns: 780px 1fr; gap: 26px; }
+    .result-card { border: 1px solid #cbd5e1; background: #fff; border-radius: 15px; box-shadow: 0 24px 60px rgba(15,23,42,.10); position: relative; overflow: hidden; }
+    .result-card > strong { display: block; height: 47px; padding: 11px 22px; font-size: 19px; color: #334155; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; }
+    .result-viewport { position: absolute; top: 47px; bottom: 0; left: 0; right: 0; overflow: hidden; }
+    .result-viewport img { display: block; position: absolute; left: 0; top: 0; height: auto; max-width: none; }
+    .summary-shot img { width: 790px; }
+    .answers-shot img { width: 945px; top: -1060px; }
+    .outro { position: absolute; bottom: 66px; left: 92px; font-size: 31px; font-weight: 750; letter-spacing: -.025em; }
+    .outro span { color: #a56f12; }
+    .outro-note { position: absolute; right: 92px; bottom: 72px; font-size: 20px; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div id="root" data-composition-id="main" data-start="0" data-duration="24" data-width="1920" data-height="1080">
+    <section id="s1" class="clip scene" data-start="0" data-duration="2" data-track-index="0">
+      <div class="hook-image" data-layout-allow-overflow><img src="assets/ui/questions-live.png" alt="Guided comparison setup screen" /></div>
+      <div class="hook-wash"></div>
+      <div class="masthead"><span>◆</span> LLM COMPARISON LAB</div>
+      <div class="hero"><div class="hero-line"></div><h1>Two models.<br />The same questions.</h1><p>A clearer way to compare what each route returns.</p></div>
+      <div class="foot">A local workspace for small, inspectable comparisons</div>
+    </section>
+
+    <section id="s2" class="clip scene" data-start="2" data-duration="5" data-track-index="0">
+      <div class="masthead"><span>◆</span> LLM COMPARISON LAB</div>
+      <div class="chapter"><div class="eyebrow">01 / QUESTIONS</div><div class="rule"></div><h2>Choose<br />questions.</h2><p>Pick the same set for both routes. Here, 10 of 30 sample questions are selected.</p><div class="tag">Practice sample · not a benchmark</div></div>
+      <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><strong>Experiments / Questions</strong></div><div class="viewport questions" data-layout-allow-overflow><img src="assets/ui/questions-live.png" alt="Actual questions selection showing ten of thirty authored sample questions" /><div class="marker"></div></div></div>
+      <div class="foot">Built-in questions are for demonstration and practice.</div>
+      <div class="step-line"><b class="on"></b><b></b><b></b><b></b></div>
+    </section>
+
+    <section id="s3" class="clip scene" data-start="7" data-duration="5" data-track-index="0">
+      <div class="masthead"><span>◆</span> LLM COMPARISON LAB</div>
+      <div class="chapter"><div class="eyebrow">02 / ROUTES</div><div class="rule"></div><h2>Choose two<br />provider routes.</h2><p>Model A and Model B receive the same questions and shared instruction.</p><div class="tag">The route matters, too.</div></div>
+      <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><strong>Experiments / Models</strong></div><div class="viewport models" data-layout-allow-overflow><img src="assets/ui/live-model-selection.png" alt="Actual selection of an OpenRouter Gemma route and an OpenCode Zen big-pickle route" /><div id="route-a" class="marker a"></div><div id="route-b" class="marker b"></div></div></div>
+      <div class="foot">Eligible at last check is not a promise of generation.</div>
+      <div class="step-line"><b class="on"></b><b class="on"></b><b></b><b></b></div>
+    </section>
+
+    <section id="s4" class="clip scene" data-start="12" data-duration="5" data-track-index="0">
+      <div class="masthead"><span>◆</span> LLM COMPARISON LAB</div>
+      <div class="chapter"><div class="eyebrow">03 / REVIEW</div><div class="rule"></div><h2>Review the<br />request count.</h2><p>See the advisory budget before choosing whether to start.</p></div>
+      <div class="s4-callout">10 questions × 2 routes<br />= 20 initial requests<small>Retries 0 · absolute cap shown before start</small></div>
+      <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><strong>Experiments / Review and start</strong></div><div class="viewport review" data-layout-allow-overflow><img src="assets/ui/live-review.png" alt="Actual advisory request estimate before starting; no generation shown" /><div class="marker"></div></div></div>
+      <div class="foot">After starting: track completed, failed, pending and active requests. No run is started here.</div>
+      <div class="step-line"><b class="on"></b><b class="on"></b><b class="on"></b><b></b></div>
+    </section>
+
+    <section id="s5" class="clip scene" data-start="17" data-duration="7" data-track-index="0">
+      <div class="masthead"><span>◆</span> LLM COMPARISON LAB</div>
+      <div class="fixture-badge">ILLUSTRATIVE FIXTURES · NOT REAL RESULTS</div>
+      <div class="s5-head"><div><div class="eyebrow">04 / INTERPRET</div><h2>Compare paired answers.</h2></div></div>
+      <div class="results-grid">
+        <div class="result-card"><strong>First, check coverage and missing responses</strong><div class="result-viewport summary-shot" data-layout-allow-overflow><img src="assets/ui/results-fixture.png" alt="Synthetic fixture results showing completed, failed, pending and cancelled counts" /></div></div>
+        <div class="result-card"><strong>Then, inspect the same question side by side</strong><div class="result-viewport answers-shot" data-layout-allow-overflow><img id="paired-answers" src="assets/ui/results-fixture.png" alt="Synthetic fixture question and paired demonstration answers" /></div></div>
+      </div>
+      <div class="outro">Compare the evidence <span>— not a made-up winner.</span></div>
+      <div class="outro-note">No overall winner from a small sample.</div>
+    </section>
+
+    <audio id="instrumental-bed" src="assets/music/bed.mp3" data-start="0" data-duration="24" data-volume="0.12" data-fade-in="1.2" data-fade-out="2" data-track-index="1"></audio>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    window.__timelines.main = tl;
+    // Absolute positions make seeking to any scene deterministic.
+    for (const [id, start, end] of [['s1', 0, 2], ['s2', 2, 7], ['s3', 7, 12], ['s4', 12, 17], ['s5', 17, 24]]) {
+      if (start) tl.fromTo('#' + id, { opacity: 0 }, { opacity: 1, duration: .35, ease: 'power2.out' }, start);
+      if (end < 24) tl.to('#' + id, { opacity: 0, duration: .22, ease: 'power1.in' }, end - .22);
+    }
+    tl.fromTo('.hook-image img', { scale: 1 }, { scale: 1.035, duration: 2, ease: 'none' }, 0);
+    tl.fromTo('#route-a', { opacity: .25 }, { opacity: 1, duration: .45 }, 7.45);
+    tl.fromTo('#route-b', { opacity: .25 }, { opacity: 1, duration: .45 }, 8.45);
+    tl.fromTo('#paired-answers', { y: 0 }, { y: -48, duration: 4, ease: 'power1.inOut' }, 19.5);
+    tl.seek(0);
+  </script>
+</body>
+</html>
