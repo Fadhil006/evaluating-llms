@@ -19,7 +19,12 @@ from app.providers.fixture import Fixture
 from app.providers.openrouter import OpenRouter
 from app.providers.policy import decide
 from app.providers.zen import Zen
-from app.providers.zen_pricing import ZEN_PRICING_EXPIRES_AT, ZEN_PRICING_SOURCE
+from app.providers.zen_pricing import (
+    ZEN_PRICING_CHECKED_ON,
+    ZEN_PRICING_EXPIRES_AT,
+    ZEN_PRICING_EXPIRES_ON,
+    ZEN_PRICING_SOURCE,
+)
 from app.providers.zen_pricing import evidence as zen_evidence
 
 NOW = datetime.now(UTC)
@@ -58,11 +63,14 @@ def test_zero_and_stale_and_unsupported():
 
 
 def test_zen_dated_free_allowlist_and_expiry():
+    assert ZEN_PRICING_CHECKED_ON.isoformat() == "2026-10-22"
+    assert ZEN_PRICING_EXPIRES_ON.isoformat() == "2026-10-23"
+    checked_now = datetime(2026, 10, 22, 12, tzinfo=UTC)
     free = CatalogEntry("big-pickle", "Big Pickle", "chat/completions", None, ("max_tokens",),
                         zen_evidence("big-pickle"), pricing_source=ZEN_PRICING_SOURCE,
                         pricing_expires_at=ZEN_PRICING_EXPIRES_AT)
     request = GenerationRequest(free.model_id, (("user", "hi"),), max_tokens=128)
-    assert decide("opencode_zen", free, ZEN_NOW, ZEN_NOW, request).allowed
+    assert decide("opencode_zen", free, checked_now, checked_now, request).allowed
     stale = ZEN_PRICING_EXPIRES_AT
     assert decide("opencode_zen", free, stale - timedelta(minutes=1), stale, request).reason == "stale_pricing"
     assert decide("opencode_zen", CatalogEntry("big-pickle", "Big Pickle", "responses", None, (),

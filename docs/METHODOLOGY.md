@@ -1,6 +1,6 @@
 # Methodology and interpretation
 
-Last checked: 2026-10-18. This describes implemented code where verified and labels incomplete integration or verification as provisional. It is not a report of a new broad live study. Fixture results are synthetic; the existing small live run is a sampled smoke, not broad performance evidence.
+Last checked: 2026-10-22 (starter datasets and their scoring/selection contracts; older verification dates below remain specific to those features). This describes implemented code where verified and labels incomplete integration or verification as provisional. It is not a report of a new broad live study. Fixture results are synthetic; the existing small live run is a sampled smoke, not broad performance evidence.
 
 ## Scope and paper-to-feature attribution
 
@@ -21,6 +21,18 @@ Split enforcement, immutable snapshots, threshold choices, and API/UI mechanics 
 The current importer (`backend/app/services/datasets.py`) accepts `dev`, `calibration`, `test`, or `legacy_unknown`; missing split metadata remains `legacy_unknown`. Known-split items require a family ID. A family cannot cross splits within an import or across saved dataset versions, and family variants must agree on split, task, scorer configuration, references, and applicable multiple-choice choices. Normalized task/prompt/context/choices content is checked within an import and across versions for cross-split reuse. Duplicate normalized content within one split is surfaced and requires explicit acknowledgement to save. CSV provenance is parsed as JSON; version detail and exports expose split/family/variant/review metadata. Dataset versions retain canonical content hashes and metadata.
 
 These checks establish declared provenance/consistency, not independent family review, semantic paraphrase validity, or absence of contamination. Review status is uploader-declared metadata. `datasets/instruction_following_draft_v1.jsonl` contains only 5 dev families / 10 draft items; the proposed 40-family suite is incomplete. None are independently reviewed or used in a held-out study.
+
+## Local 5-, 10-, and 20-question starter datasets
+
+The starter datasets are overlapping, nested subsets of `datasets/original_demo_v1.jsonl`, not new independently sampled benchmarks. Their sizes and selection recipe are local usability choices, not requirements from the survey. The original 30-question dataset remains available and unchanged.
+
+Selection cycles through arithmetic, multiple choice, short factual, structured extraction, instruction following, and summarization, taking the next source item in each category until the requested size is reached. The 5-question set covers the five deterministic/reference-check task categories; the 10- and 20-question sets also include summarization. Source prompts, references, scoring configurations, licenses, and declared split/review/family metadata are retained. Legacy-unknown metadata is not promoted to reviewed, held-out, or independent-family status. Dataset provenance records the source and selected IDs.
+
+This is a limited application of Chang et al.'s [what/where/how framing](https://doi.org/10.1145/3641289): task coverage is **what**, versioned locally authored examples and their provenance are **where**, and task-specific automatic checks plus separate human review are **how**. The primary paper's Section 5.1 and Table 9 discuss task-dependent exact-match, F1, and ROUGE metrics; Section 5.2 discusses human evaluation. They do not prescribe these subsets, this app's exact checks, or a single overall scoring formula.
+
+Arithmetic uses numeric comparison, multiple choice uses label accuracy, short factual uses normalized exact match, structured extraction uses JSON/schema/field checks, and instruction following uses the declared versioned checks. Summarization uses ROUGE-L overlap, **not factual correctness**. Report each task/metric and its scored denominator separately; do not turn unlike metrics into an overall winner. The subsets overlap and are tiny convenience samples, not independent replications or evidence of statistical superiority. Existing paired-family analysis safeguards still apply; these legacy-unknown items do not acquire independent families just because a set has 20 questions.
+
+The experiment wizard explicitly selects all items for a starter dataset: with two model routes and one repetition, the 5-, 10-, and 20-question sets require 10, 20, and 40 initial requests respectively. Other datasets retain the existing quick-sample default unless explicitly configured otherwise. An estimate or dataset installation does not start generation. No HELM, official IFEval, MT-Bench, Chatbot Arena, or AI judge is run by choosing these datasets.
 
 ## Scorers and instruction checks
 

@@ -1,0 +1,61 @@
+name: Build desktop executables
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "datasets/**"
+      - "packaging/**"
+      - ".github/workflows/desktop-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: llm-comparison-lab-linux-x86_64
+          - os: windows-latest
+            artifact: llm-comparison-lab-windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install backend dependencies and PyInstaller
+        run: python -m pip install ./backend pyinstaller
+
+      - name: Build desktop executable
+        run: python -m PyInstaller --noconfirm --clean packaging/desktop.spec
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+          if-no-files-found: error

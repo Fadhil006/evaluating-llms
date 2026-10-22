@@ -3,8 +3,8 @@
 from datetime import UTC, date, datetime, time
 
 ZEN_PRICING_SOURCE = "https://opencode.ai/v2/docs/console/models/"
-ZEN_PRICING_CHECKED_ON = date(2026, 10, 21)
-ZEN_PRICING_EXPIRES_ON = date(2026, 10, 22)
+ZEN_PRICING_CHECKED_ON = date(2026, 10, 22)
+ZEN_PRICING_EXPIRES_ON = date(2026, 10, 23)
 ZEN_PRICING_EXPIRES_AT = datetime.combine(ZEN_PRICING_EXPIRES_ON, time.min, UTC)
 
 # Each exact ID is listed as free and uses the documented OpenAI chat endpoint.

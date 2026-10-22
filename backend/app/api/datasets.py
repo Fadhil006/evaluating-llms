@@ -6,15 +6,27 @@ scoring_config: "{""metric"":""normalized_exact_match"",""normalization"":""unic
 Save uses name and version query parameters; dataset_id adds an immutable version.
 """
 
+import json
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import Dataset, DatasetItem, DatasetVersion
 from app.services.datasets import MAX_BYTES, ImportProblem, error, preview, save
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
+
+STARTER_SETS = ((5, "LLM Comparison Lab Starter 5"),
+                (10, "LLM Comparison Lab Starter 10"),
+                (20, "LLM Comparison Lab Starter 20"))
+CATEGORY_ORDER = ("arithmetic", "multiple_choice", "short_factual",
+                  "structured_extraction", "instruction_following", "summarization")
+STARTER_DESCRIPTION = (
+    "Newly authored CC0 local examples selected from the LLM Comparison Lab Original Demo; "
+    "a small overlapping convenience set for descriptive exploration, not an established or validated benchmark."
+)
 
 
 async def upload(request: Request) -> tuple[bytes, str]:
@@ -61,7 +73,8 @@ async def import_save(request: Request, name: str, version: str, dataset_id: int
 @router.post("/built-in", status_code=201)
 def install_built_in(request: Request):
     """Install or reuse the original CC0 demonstration dataset."""
-    path = Path(__file__).resolve().parents[3] / "datasets" / "original_demo_v1.jsonl"
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+    path = bundle_root / "datasets" / "original_demo_v1.jsonl"
     if not path.is_file():
         raise HTTPException(503, "Built-in dataset file is unavailable")
     data = path.read_bytes()
@@ -84,6 +97,66 @@ def install_built_in(request: Request):
         dataset.origin = "original"
         dataset.description = "Newly authored demonstration items; not an established benchmark."
         return result | {"already_present": False}
+
+
+@router.post("/starter-sets")
+def install_starter_sets(request: Request):
+    """Install or reuse immutable nested 5/10/20-item convenience subsets."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+    path = bundle_root / "datasets" / "original_demo_v1.jsonl"
+    if not path.is_file():
+        raise HTTPException(503, "Built-in dataset file is unavailable")
+    raw = path.read_bytes()
+    original_hash = preview(raw, "jsonl")["content_sha256"]
+    source_items = [json.loads(line) for line in raw.decode("utf-8-sig").splitlines() if line.strip()]
+    groups = {category: [item for item in source_items if item["task_type"] == category]
+              for category in CATEGORY_ORDER}
+    if len(source_items) != 30 or any(len(items) != 5 for items in groups.values()):
+        raise HTTPException(503, "Original dataset does not match the starter-set source contract")
+    ordered = [groups[category][index] for index in range(5) for category in CATEGORY_ORDER
+               if index < len(groups[category])]
+    provenance = {
+        "kind": "deterministic_subset",
+        "source_dataset": "LLM Comparison Lab Original Demo",
+        "source_version": "v1",
+        "source_content_sha256": original_hash,
+        "selection_recipe": "round-robin by category in arithmetic, multiple_choice, short_factual, structured_extraction, instruction_following, summarization order; source order within category",
+        "research_interpretation": "Newly authored CC0 local examples; tiny overlapping convenience subset, descriptive exploration only; not an established/validated benchmark, independent sample, or evidence of reviewer acceptance. Preserve source split, family, variant, and review metadata as-is.",
+    }
+    results = []
+    with request.app.state.sessions.begin() as session:
+        for size, name in STARTER_SETS:
+            data = "\n".join(json.dumps(item, ensure_ascii=False) for item in ordered[:size]).encode("utf-8")
+            expected_hash = preview(data, "jsonl")["content_sha256"]
+            existing = session.scalar(select(Dataset).where(Dataset.name == name))
+            if existing is not None:
+                version = session.scalar(select(DatasetVersion).where(
+                    DatasetVersion.dataset_id == existing.id, DatasetVersion.version == "v1"))
+                count = session.scalar(select(func.count()).select_from(DatasetItem).where(
+                    DatasetItem.dataset_version_id == version.id)) if version else 0
+                if version is None or count != size or version.content_sha256 != expected_hash:
+                    raise HTTPException(409, f"Existing starter dataset {name!r} has an incompatible version or size")
+                results.append({"dataset_id": existing.id, "version": version.version,
+                                "question_count": count, "already_present": True,
+                                "content_sha256": version.content_sha256})
+                continue
+            try:
+                result = save(session, data, "jsonl", name=name, version="v1",
+                              description=STARTER_DESCRIPTION,
+                              source="Newly authored local examples for LLM Comparison Lab, subset selection",
+                              license="CC0-1.0")
+            except ImportProblem as exc:
+                raise invalid(exc) from None
+            dataset = session.get(Dataset, result["dataset_id"])
+            dataset.origin = "original"
+            version = session.scalar(select(DatasetVersion).where(
+                DatasetVersion.dataset_id == dataset.id, DatasetVersion.version == "v1"))
+            version.manifest = version.manifest | {"provenance": provenance | {
+                "subset_size": size, "selected_source_item_ids": [item["id"] for item in ordered[:size]]}
+            }
+            results.append({"dataset_id": dataset.id, "version": "v1", "question_count": size,
+                            "already_present": False, "content_sha256": result["content_sha256"]})
+    return {"datasets": results}
 
 
 @router.get("")

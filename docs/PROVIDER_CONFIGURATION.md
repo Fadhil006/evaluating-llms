@@ -32,21 +32,24 @@ only model IDs present in its chat endpoint map; unrecognized model routes fail
 closed. It does not infer eligibility from model names.
 
 The official model page calls free models limited-time and publishes no specific
-expiry date. Its free-price table and endpoint table were rechecked on 2026-10-21.
-The endpoint and price tables were both fetched from the official page on
-2026-10-21 (HTTP 200, uncached official Markdown). All 13 allowlisted IDs still
-had explicit Free input, output and cached-read prices, with cached-write “—”.
-Thirteen of the fourteen listed free models use the OpenAI-compatible
-chat endpoint; `jev-1.13-free` uses `/inference/systemone/v1/systemone` and is
-excluded from chat eligibility. The public catalog was also observed returning
-HTTP 200 with `application/json` and a top-level `data` list (model metadata,
-including `id`, `object`, `created`, and `owned_by`). This validates public
-catalog discovery only; authenticated generation has not been tested. The exact
-free/chat intersection evidence expires on 2026-10-22 at 00:00 UTC pending fresh
-review. This is a local evidence-expiry policy, not a provider guarantee. A
-free model without current evidence is not dispatchable. OpenCode does not
-document a free-request quota counter; its quota remains unknown rather than
-being represented as zero or unlimited.
+expiry date. Its endpoint and pricing tables were fetched on 2026-10-22 from
+`https://opencode.ai/v2/docs/console/models/` (HTTP 200, uncached official
+Markdown). All 13 existing allowlisted IDs explicitly show Free input, output,
+and cached-read prices, with cached-write “—”; each exact ID is also listed at
+`https://opencode.ai/inference/openai/v1/chat/completions`. The page lists 15
+free models, including the newly listed Flint 40B Free; Flint was not added to
+the local allowlist. Jev 1.13 Free is listed at
+`https://opencode.ai/inference/systemone/v1/systemone` and is excluded from chat
+eligibility. The current official API Overview is
+https://opencode.ai/v2/docs/console/api/ (HTTP 200); it documents bearer-key
+authentication and links inference to `https://opencode.ai/inference/...`, but
+does not provide further chat-request details. Separately, the 2026-10-22
+metadata checks succeeded for the OpenRouter account and catalog and the Zen
+public catalog. No model generation was sent. The refreshed local evidence
+expires on 2026-10-23 at 00:00 UTC. This is a local evidence-expiry policy, not a
+provider guarantee. A free model without current evidence is not dispatchable.
+OpenCode does not document a free-request quota counter; its quota remains
+unknown rather than being represented as zero or unlimited.
 
 ## OpenRouter
 

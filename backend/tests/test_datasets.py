@@ -224,3 +224,94 @@ def test_csv_provenance_json_roundtrips_with_split(tmp_path):
     detail = client.get(f"/api/datasets/{response.json()['dataset_id']}/versions/v1").json()
     assert detail["items"][0]["provenance"] == {"origin": "project draft"}
     engine.dispose()
+
+
+def test_starter_sets_are_nested_validated_and_idempotent(tmp_path):
+    client, engine = client_for(tmp_path)
+    installed = client.post("/api/datasets/starter-sets")
+    assert installed.status_code == 200, installed.text
+    entries = installed.json()["datasets"]
+    assert [(entry["version"], entry["question_count"], entry["already_present"])
+            for entry in entries] == [("v1", 5, False), ("v1", 10, False), ("v1", 20, False)]
+    details = [client.get(f"/api/datasets/{entry['dataset_id']}/versions/v1").json() for entry in entries]
+    ids = [[item["id"] for item in detail["items"]] for detail in details]
+    assert set(ids[0]) < set(ids[1]) < set(ids[2])
+    assert [{item["task_type"] for item in detail["items"]} for detail in details] == [
+        {"arithmetic", "multiple_choice", "short_factual", "structured_extraction", "instruction_following"},
+        {"arithmetic", "multiple_choice", "short_factual", "structured_extraction", "instruction_following", "summarization"},
+        {"arithmetic", "multiple_choice", "short_factual", "structured_extraction", "instruction_following", "summarization"},
+    ]
+    source_path = Path(__file__).resolve().parents[2] / "datasets/original_demo_v1.jsonl"
+    source_bytes = source_path.read_bytes()
+    source_items = [json.loads(line) for line in source_bytes.decode().splitlines()]
+    source = {item["id"]: item for item in source_items}
+    expected_source_hash = preview(source_bytes, "jsonl")["content_sha256"]
+    from app.evaluation.scoring import score
+
+    checked_tasks = set()
+    for detail in details:
+        metadata = detail["manifest"]["provenance"]
+        assert metadata["source_dataset"] == "LLM Comparison Lab Original Demo"
+        assert metadata["source_content_sha256"] == expected_source_hash
+        assert metadata["subset_size"] == len(detail["items"])
+        assert "not an established/validated benchmark" in metadata["research_interpretation"]
+        assert set(metadata["selected_source_item_ids"]) == {item["id"] for item in detail["items"]}
+        for item in detail["items"]:
+            original = source[item["id"]]
+            assert item["prompt"] == original["prompt"]
+            assert item["reference_answers"] == original["reference_answers"]
+            assert item["scoring_config"] == original["scoring_config"]
+            assert item["split"] == "legacy_unknown"
+            assert item["family_id"] is None and item["review_status"] == "legacy_unknown"
+            if item["task_type"] in {"arithmetic", "multiple_choice", "short_factual",
+                                     "structured_extraction", "instruction_following"} and item["task_type"] not in checked_tasks:
+                check = item["scoring_config"].get("checks", [{}])[0]
+                reference = (check.get("value") if check.get("type") == "exact_text" else
+                             json.dumps(check["value"]) if check.get("type") == "json_exact" else
+                             json.dumps(item["reference_answers"][0]) if item["task_type"] == "structured_extraction" else
+                             item["reference_answers"][0])
+                result = score(item["task_type"], reference, item["reference_answers"], item["scoring_config"])
+                metric = {"structured_extraction": "field_exact",
+                          "instruction_following": "instruction_all_checks"}.get(
+                              item["task_type"], item["scoring_config"]["metric"])
+                assert result["metrics"][metric] == 1.0, (item["id"], result)
+                checked_tasks.add(item["task_type"])
+            if item["task_type"] == "summarization":
+                result = score(item["task_type"], item["reference_answers"][0],
+                               item["reference_answers"], item["scoring_config"])
+                assert result["metrics"]["rouge_l_f1"] == 1.0
+                assert "not factuality" in result["explanation"]
+    assert checked_tasks == {"arithmetic", "multiple_choice", "short_factual",
+                             "structured_extraction", "instruction_following"}
+    repeated = client.post("/api/datasets/starter-sets")
+    assert repeated.status_code == 200
+    assert all(item["already_present"] for item in repeated.json()["datasets"])
+    assert [item["dataset_id"] for item in repeated.json()["datasets"]] == [item["dataset_id"] for item in entries]
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(Dataset)) == 3
+        assert session.scalar(select(func.count()).select_from(DatasetVersion)) == 3
+    engine.dispose()
+
+
+def test_starter_set_conflict_rolls_back_prior_creations(tmp_path):
+    client, engine = client_for(tmp_path)
+    with sessionmaker(engine).begin() as session:
+        dataset = Dataset(name="LLM Comparison Lab Starter 10", origin="imported")
+        session.add(dataset)
+        session.flush()
+        version = DatasetVersion(dataset_id=dataset.id, version="v1", content_sha256="f" * 64,
+                                 import_schema_version="2")
+        session.add(version)
+        session.flush()
+        session.add(DatasetItem(dataset_version_id=version.id, external_id="wrong", task_type="short_factual",
+                                prompt="Wrong starter content", reference_answers=["wrong"],
+                                scoring_config={"metric": "normalized_exact_match",
+                                                "normalization": "unicode_nfc_casefold_trim_collapse_whitespace"}))
+    response = client.post("/api/datasets/starter-sets")
+    assert response.status_code == 409
+    with Session(engine) as session:
+        assert session.scalars(select(Dataset.name)).all() == ["LLM Comparison Lab Starter 10"]
+        assert session.scalar(select(func.count()).select_from(DatasetVersion)) == 1
+        assert session.scalar(select(func.count()).select_from(DatasetItem)) == 1
+        assert session.scalar(select(DatasetVersion.content_sha256)) == "f" * 64
+    engine.dispose()

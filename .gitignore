@@ -12,6 +12,8 @@ frontend/node_modules
 frontend/dist/
 frontend/test-results/
 frontend/playwright-report/
+dist/
+report-output/.~lock*
 brag-output/composition/.hyperframes/
 brag-output/composition/node_modules/
 brag-output/snapshots/

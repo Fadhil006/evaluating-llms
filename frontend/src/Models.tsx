@@ -119,12 +119,14 @@ export default function Models({ mode }: { mode?: 'live' | 'demo' }) {
           {quota[provider.slug] && <p className="mt-2 text-sm">Account-limit check: {quota[provider.slug].status === 'reachable' && quota[provider.slug].quota ? `observed ${quota[provider.slug].quota?.free_used ?? 'usage not reported'} used of ${quota[provider.slug].quota?.free_limit ?? 'limit not reported'} at ${quota[provider.slug].quota?.observed_at}` : quota[provider.slug].status === 'unknown' ? 'The provider did not report quota. This does not mean the account is out of requests.' : quota[provider.slug].status === 'unconfigured' ? 'No server credential is configured.' : `${quota[provider.slug].status}${quota[provider.slug].reason ? ` · ${quota[provider.slug].reason}` : ''}. This check does not establish remaining quota.`}</p>}
         <p className="text-sm">Policy: {Object.entries(provider.policy_links).map(([name, href]) => <span key={name} className="mr-3"><a className="underline" href={href} target="_blank" rel="noopener noreferrer">{name} ↗</a></span>)}</p>
       </li>)}</ul>}
-       <h3 className="mt-6 text-lg font-semibold">{mode === 'demo' ? 'Synthetic demonstration models' : 'Verified-free models'}</h3>
-        {!error && models.length === 0 ? <p className="mt-2 text-slate-600">No catalog entries are saved yet. Next: configure a provider on the server and refresh. In demonstration mode, refresh creates synthetic routes.</p>
-          : !error && listedModels.length === 0 ? <p role="status" className="mt-2 text-slate-700">No routes are currently selectable ({models.length} catalog entries checked). Some may have missing, expired, or unverifiable zero-price evidence, be unsupported, or be unavailable. Next: refresh the catalog; if a provider credential is missing, follow its server-side setup above.</p>
-         : <><p className="mt-2 text-sm text-slate-600">{mode === 'demo' ? `${listedModels.length} synthetic fixture route(s); not live models or free-model claims.` : `Showing ${listedModels.length} route(s) with fresh backend-verified zero-cost evidence; other catalog entries are hidden.`}</p><ul className="mt-2 space-y-4">{listedModels.map(model => {
+        <h3 className="mt-6 text-lg font-semibold">{mode === 'demo' ? 'Synthetic demonstration models' : 'Verified-free models'}</h3>
+         {!error && models.length === 0 ? <p className="mt-2 text-slate-600">No catalog entries are saved yet. Next: configure a provider on the server and refresh. In demonstration mode, refresh creates synthetic routes.</p>
+           : <><p className="mt-2 text-sm text-slate-600">{mode === 'demo' ? `${listedModels.length} synthetic fixture route(s); not live models or free-model claims.` : `Showing ${listedModels.length} route(s) with fresh backend-verified zero-cost evidence; other catalog entries are hidden.`}</p>{(mode === 'demo' ? ['fixture'] : ['openrouter', 'opencode_zen']).map(provider => {
+             const providerModels = listedModels.filter(model => model.provider === provider)
+             const title = mode === 'demo' ? 'Synthetic demonstration models' : `${provider === 'openrouter' ? 'OpenRouter' : 'OpenCode Zen'} models`
+             return <details key={provider} className="mt-2 rounded border p-3"><summary className="cursor-pointer font-semibold">{title} ({providerModels.length})</summary>{providerModels.length ? <ul className="mt-2 space-y-2">{providerModels.map(model => {
         const eligible = model.eligibility?.allowed === true && model.eligibility.checked_at != null && model.eligibility.model_id === model.model_id && !!model.pricing_source
-        return <li key={model.id}><article className="rounded border border-slate-200 p-4">
+         return <li key={model.id}><details className="rounded border border-slate-200 p-3"><summary className="cursor-pointer font-semibold">{model.name}</summary><article className="mt-2 p-1">
           <h4 className="font-semibold">{model.name}</h4>
           <p className="mt-1 break-all text-sm">Exact route: <code>{model.provider} / {model.model_id}</code></p>
           <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
@@ -137,8 +139,9 @@ export default function Models({ mode }: { mode?: 'live' | 'demo' }) {
             <div><dt className="font-medium">Pricing checked at</dt><dd>{model.checked_at ?? 'Never'}</dd></div>
              <div><dt className="font-medium">Free-only catalog decision</dt><dd className={eligible && model.credential_configured ? 'font-semibold text-emerald-800' : 'font-semibold text-amber-900'}>{mode === 'demo' && model.provider === 'fixture' ? 'Not a live model; synthetic demonstration only' : eligible && !model.credential_configured ? 'Zero-price evidence verified; provider key not configured, so execution is unavailable' : eligible ? 'Eligible at last check' : 'Blocked'}{!(mode === 'demo' && model.provider === 'fixture') && !eligible && <> — {model.eligibility?.allowed ? 'Missing matching dated backend evidence' : reasons[model.eligibility?.reason] ?? model.eligibility?.reason ?? 'No backend eligibility evidence'}</>}</dd></div>
           </dl>
-        </article></li>
-       })}</ul></>}
+         </article></details></li>
+         })}</ul> : <p role="status" className="mt-2 text-slate-700">No eligible routes currently listed for this provider.</p>}</details>
+           })}</>}
     </>}
   </section>
 }

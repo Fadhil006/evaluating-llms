@@ -1,3 +1,4 @@
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -191,7 +192,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latest.setdefault((slug, row.model_id), serialize_model(row, slug, now, credential_configured))
             return list(latest.values())
 
-    frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    frontend = bundle_root / "frontend" / "dist"
     if (frontend / "assets").is_dir() and (frontend / "index.html").is_file():
         app.mount("/assets", StaticFiles(directory=frontend / "assets"), name="assets")
 

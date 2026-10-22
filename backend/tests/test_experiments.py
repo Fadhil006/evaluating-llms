@@ -99,6 +99,23 @@ def test_estimate_create_update_clone_and_saved_snapshot(tmp_path):
     engine.dispose()
 
 
+def test_explicit_twenty_item_selection_estimates_forty_initial_requests(tmp_path):
+    client, engine, payload, _ = setup(tmp_path)
+    with sessionmaker(engine).begin() as session:
+        session.add_all(DatasetItem(dataset_version_id=payload["dataset_version_id"],
+                                    external_id=f"item-{i:02}", task_type="short_factual",
+                                    prompt=f"Question {i}", reference_answers=["answer"],
+                                    scoring_config={"metric": "normalized_exact_match",
+                                                    "normalization": "unicode_nfc_casefold_trim_collapse_whitespace"})
+                        for i in range(12, 20))
+    item_ids = [f"item-{i:02}" for i in range(20)]
+    response = client.post("/api/experiments/estimate", json=payload | {"item_ids": item_ids})
+    assert response.status_code == 200, response.text
+    assert response.json()["item_ids"] == item_ids
+    assert response.json()["estimate"]["initial_candidate_requests"] == 40
+    engine.dispose()
+
+
 def test_validation_atomicity_non_draft_conflict_and_clone(tmp_path):
     client, engine, payload, ids = setup(tmp_path)
     for update, field in (({"item_ids": ["item-00", "missing"]}, "item_ids"),
